@@ -9,8 +9,8 @@
 ## 실행
 
 ```bash
-PYTHONPATH=examples python -m support_platform.demo                        # 로컬 데모
-uvicorn support_platform.server:app --app-dir examples --port 8078         # HTTP 서비스
+cd examples/support_platform && python demo.py                # 로컬 데모
+cd examples/support_platform && uvicorn server:app --port 8078   # HTTP 서비스
 ```
 
 서버 기동 후 브라우저로 `/docs`(Swagger UI)를 열면 등록된 Agent 3종(`support`·`triage`·`schedule`)을 API로 시험할 수 있다. 호출 시 헤더 `X-User: u1`로 사용자·권한이 주입된다. 에이전트별 curl 예제는 [support_platform/README.md](support_platform/README.md#실행).

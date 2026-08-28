@@ -47,11 +47,11 @@ def build_app():
     from klafi.app import KlafiApp
     from klafi.context.memory import user_scope
 
-    from ..app.agents.faq_agent import FaqAgent
-    from ..app.agents.schedule_agent import ScheduleAgent
-    from ..app.agents.stock_agent import StockAgent
-    from ..app.agents.support_agent import SupportAgent
-    from ..app.agents.triage_agent import TriageAgent
+    from app.agents.faq_agent import FaqAgent
+    from app.agents.schedule_agent import ScheduleAgent
+    from app.agents.stock_agent import StockAgent
+    from app.agents.support_agent import SupportAgent
+    from app.agents.triage_agent import TriageAgent
 
     # 훅·가드레일은 전부 코드로 관리한다(hooks.yaml 없음). platform_hooks 는 항상 적용.
     # KLAFI_ENV=postgres → config/environments/postgres.yaml 계층이 얹혀 실 DB 사용.

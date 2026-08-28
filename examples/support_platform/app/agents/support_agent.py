@@ -14,8 +14,8 @@ from klafi.context.memory import user_scope
 from klafi.guardrail import pii, warn_only
 from klafi.model import init_chat_model
 
-from ...platform.middleware import require_orders_read
-from ...platform.guardrails import mask_phone
+from common.middleware import require_orders_read
+from common.guardrails import mask_phone
 from ..tools import lookup_order
 
 

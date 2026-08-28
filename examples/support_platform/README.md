@@ -1,11 +1,11 @@
 # support_platform — KLAFI 전 기능 프로젝트 예제
 
-프레임워크 기능을 **전부** 사용하는 예제를, 단일 파일이 아니라 **역할별로 계층화한 패키지**로
-구성했다(`import support_platform`).
+프레임워크 기능을 **전부** 사용하는 예제를, 단일 파일이 아니라 **역할별 flat 프로젝트**로 구성했다.
+이 폴더째 복사·zip 해 klafi 만 `pip install` 하면 그대로 돈다.
 
 ```
-support_platform/            ← 설치가능 패키지
-├─ platform/                 ← 공통개발자 (인프라 · 횡단 관심사)
+support_platform/            ← 프로젝트 (flat — 이 폴더 안에서 실행)
+├─ common/                   ← 공통개발자 (인프라 · 횡단 관심사)
 │  ├─ config/                #   framework · model · policy · environments/  (인프라 값만 — 훅은 코드)
 │  ├─ guardrails.py          #   Guardrail(@guardrail): no_secrets·refund_policy·mask_phone
 │  ├─ middleware.py          #   노드 미들웨어(값 콜러블): require_orders_read·audit_log
@@ -19,13 +19,13 @@ support_platform/            ← 설치가능 패키지
 └─ demo.py                   ← 로컬 CLI 확인용 (선택)
 ```
 
-> 구조 원칙: 최상위를 **역할로 계층화** — `platform/`(공통개발자: 인프라·가드레일·미들웨어·훅)
-> 과 `app/`(업무개발자: 에이전트·툴·스킬). 프레임워크 개념은 그 안에서 파일 하나씩(가드레일은
-> 미들웨어가 아니므로 `guardrails.py`·`middleware.py` 분리).
+> 구조 원칙: 역할 분리 — `common/`(공통개발자: 인프라·가드레일·미들웨어·훅)과 `app/`(업무개발자:
+> 에이전트·툴·스킬). 둘 다 top-level 패키지, `server.py`·`demo.py`는 top-level 모듈이라 **이 폴더가
+> cwd 면 그대로 잡힌다** — 래퍼 패키지도 `--app-dir` 도 없다.
 >
-> ⚠️ `platform/` 은 반드시 `support_platform` **패키지 안**에서 `support_platform.platform` 으로만
-> 쓴다. `support_platform` 을 직접 `sys.path`(uvicorn `--app-dir`)에 올리면 그 `platform/` 하위폴더가
-> stdlib `platform` 모듈을 가려 `platform.system()` 등이 깨진다 — 그래서 진입점을 패키지로 돌린다(아래 실행).
+> 공통개발자 폴더를 `platform`이 아니라 **`common`** 으로 둔 이유: `platform`은 파이썬 stdlib 모듈명과
+> 충돌해, 그대로 두면 전체를 별도 패키지로 감싸야 했다(`support_platform.platform`). `common`으로 바꿔
+> flat 구조가 됐다.
 
 ## 훅·가드레일 관리
 
@@ -34,23 +34,23 @@ support_platform/            ← 설치가능 패키지
   - **① 플랫폼 공통** → `hooks.py`의 `GuardrailHook`(`PLATFORM_HOOKS`) : `input`/`output`/`model`/`model_output` 4스테이지
   - **② 워크플로우(클래스)** → `@klafi_graph(...)` : `triage_agent`는 `@klafi_graph(input=[refund_policy])`
   - **③ 노드 가드레일** → `@klafi_node(input=..., output=...)` : `support_agent`의 `agent` 노드는 `output=[pii]`
-  - **④ 노드 미들웨어**(가드레일 아님) → `@klafi_node(before=[...])` : `support_agent`는 `platform/middleware.py`의 `require_orders_read`로 세션/권한 확인(state 수정도 가능)
-- **공통 훅(코드, 한 곳)**: `platform/hooks.py`에서 **전부 코드로** 관리한다 — `hooks.yaml` 없음(가드레일과 동일 방침). `PLATFORM_HOOKS`(config 불필요: metrics·가드레일·`event`)는 `from_config` 에 전달하고, `context_hook`은 요약모델(gateway)이 필요해 조립 후 `bootstrap`이 `base_hooks`에 더한다. 특정 에이전트 전용이던 `audit`는 공통 훅에서 빼고 `triage_agent`의 노드 미들웨어(`@klafi_node(before=[audit_log])`)로 옮겼다.
+  - **④ 노드 미들웨어**(가드레일 아님) → `@klafi_node(before=[...])` : `support_agent`는 `common/middleware.py`의 `require_orders_read`로 세션/권한 확인(state 수정도 가능)
+- **공통 훅(코드, 한 곳)**: `common/hooks.py`에서 **전부 코드로** 관리한다 — `hooks.yaml` 없음(가드레일과 동일 방침). `PLATFORM_HOOKS`(config 불필요: metrics·가드레일·`event`)는 `from_config` 에 전달하고, `context_hook`은 요약모델(gateway)이 필요해 조립 후 `bootstrap`이 `base_hooks`에 더한다. 특정 에이전트 전용이던 `audit`는 공통 훅에서 빼고 `triage_agent`의 노드 미들웨어(`@klafi_node(before=[audit_log])`)로 옮겼다.
 - **노드 강제**: 모든 그래프 노드는 `@klafi_node("<이름>")`로 선언한다(이름 필수). ToolNode는 예외.
 
 ```python
-# platform/hooks.py — 훅은 YAML 이 아니라 코드로 선언한다
+# common/hooks.py — 훅은 YAML 이 아니라 코드로 선언한다
 PLATFORM_HOOKS = [metrics, platform_guardrails, EventHook()]   # config 불필요 → from_config 로 전달
 
 def context_hook(gateway):                                     # summarizer 가 gateway 를 필요로 함
     return ContextHook(max_tokens=400, keep_recent=4, summarizer=gateway.model("fast"))
 
-# platform/bootstrap.py — 조립 후 gateway 를 주입해 적용
+# common/bootstrap.py — 조립 후 gateway 를 주입해 적용
 app = KlafiApp.from_config(str(HERE / "config"), platform_hooks=PLATFORM_HOOKS)
 app.factory.base_hooks.append(context_hook(app.gateway))       # 등록되는 전 에이전트에 적용
 ```
 ```python
-# ① platform/hooks.py — 플랫폼 공통 가드레일 (4스테이지)
+# ① common/hooks.py — 플랫폼 공통 가드레일 (4스테이지)
 platform_guardrails = GuardrailHook(
     input=[no_secrets], output=[pii], model=[prompt_injection], model_output=[pii],
 )
@@ -60,7 +60,7 @@ platform_guardrails = GuardrailHook(
 class TriageAgent(KlafiGraph): ...
 
 # ③④ app/agents/support_agent.py — 노드 미들웨어 + 노드 가드레일
-from ...platform.middleware import require_orders_read   # ④ 미들웨어(권한): platform/middleware.py
+from common.middleware import require_orders_read   # ④ 미들웨어(권한): common/middleware.py
 
 @klafi_node("agent", before=[require_orders_read], output=[pii])   # ③ 노드 가드레일 (이름 필수)
 def agent(state): ...
@@ -84,28 +84,24 @@ def triage(state): ...
 | Tool | `tools.py` (권한·검증) → `support_agent`가 `init_chat_model("main").bind_tools([lookup_order])` + `make_tool_node([lookup_order])` |
 | Long-Term Memory | 플랫폼 공통 Store, `bootstrap`에서 시드, `support_agent`가 `get_store()`로 사용자 선호 조회 |
 | Guardrail | 코드로 적용(4지점) — 공통 `GuardrailHook`(input/output/model/model_output) + `@klafi_graph`(triage 클래스) + `@klafi_node(after=[mask_phone, warn_only(pii)])`(support 노드 — 마스킹+경고) → fail-close |
-| 노드 미들웨어 | `platform/middleware.py`의 `require_orders_read`(권한)·`audit_log`(감사) → `@klafi_node(before=[...])` — 가드레일 아님, state 수정 가능 |
+| 노드 미들웨어 | `common/middleware.py`의 `require_orders_read`(권한)·`audit_log`(감사) → `@klafi_node(before=[...])` — 가드레일 아님, state 수정 가능 |
 | HITL | `stock_agent`: 매수 실행 전 `request_approval`로 interrupt → `/resume`(승인/반려). 승인 시에만 `buy_stock`(mock) 체결. 체크포인터가 중단 상태 보관 |
 | Evaluation · Registry · Event | `demo.py` 데모 |
 
 ## 실행
 
-`support_platform` 은 패키지이므로 그 **부모(`examples/`)** 를 기준으로 실행한다
-(`--app-dir examples`). support_platform 을 직접 path 에 올리면 `platform/` 이 stdlib 를 가린다.
+**이 폴더 안에서** 실행한다 — 래퍼 패키지도 `--app-dir` 도 없다(폴더째 복사·zip 해도 동일).
 
 ### CLI 데모 (전 기능 한 번에)
 
 ```bash
-cd examples && python -m support_platform.demo
-```
-```bash
-PYTHONPATH=examples python -m support_platform.demo   # cd 없이 (저장소 루트에서)
+cd examples/support_platform && python demo.py
 ```
 
 ### HTTP 서비스 (Swagger UI)
 
 ```bash
-uvicorn support_platform.server:app --app-dir examples --port 8078
+cd examples/support_platform && uvicorn server:app --port 8078
 ```
 
 브라우저에서 `http://127.0.0.1:8078/docs` → 등록된 에이전트를 바로 시험할 수 있다.
@@ -177,8 +173,8 @@ curl -i -X POST http://127.0.0.1:8078/agents/support/invoke -H 'X-User: u1' \
 저장소는 **환경 계층**으로 전환한다 (DSN은 config에 평문으로 두지 않고 `.env`의 `KLAFI_PG_DSN`으로 주입 — SEC-05):
 
 ```bash
-PYTHONPATH=examples python -m support_platform.demo                     # 기본: 메모리
-KLAFI_ENV=postgres PYTHONPATH=examples python -m support_platform.demo  # 실 PostgreSQL (풀 + 스키마 자동생성)
+python demo.py                     # 기본: 메모리 (examples/support_platform 안에서)
+KLAFI_ENV=postgres python demo.py  # 실 PostgreSQL (풀 + 스키마 자동생성)
 ```
 
 `agents/` 는 어느 경우에도 손대지 않는다.

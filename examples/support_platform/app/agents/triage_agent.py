@@ -15,8 +15,8 @@ from langgraph.prebuilt import tools_condition
 from klafi.core import AgentSpec, KlafiGraph, klafi_graph, klafi_node
 from klafi.model import init_chat_model
 
-from ...platform.middleware import audit_log
-from ...platform.guardrails import refund_policy
+from common.middleware import audit_log
+from common.guardrails import refund_policy
 from ..tools import lookup_order, search_policy
 
 

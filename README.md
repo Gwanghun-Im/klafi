@@ -13,11 +13,11 @@ KLAFI는 LangGraph의 자유도를 유지하면서, Enterprise SI에서 반복�
 ## 설치
 
 ```bash
-pip install -e .            # core
-pip install -e ".[server]"  # + FastAPI Agent Server
+pip install -e .                # core (FastAPI Agent Server 포함)
+pip install -e ".[anthropic]"   # + Claude  (OpenAI 는 [openai])
 ```
 
-의존: `langgraph`, `langchain-core`, `pydantic`, `pyyaml`, `opentelemetry-api/sdk`. Server는 `fastapi` (optional extra).
+의존: `langgraph`, `langchain-core`, `pydantic`, `pyyaml`, `opentelemetry-api/sdk`, `fastapi`(Agent Server, 코어). 모델 SDK(`anthropic`/`openai`)와 ASGI 실행기(`uvicorn`)는 앱이 고르는 별도 항목. (`[server]` extra 는 하위호환용으로 남아 있음 — fastapi 가 이미 코어라 no-op)
 
 ---
 
@@ -91,7 +91,7 @@ agent.invoke({...})
 - **표준 패턴이 필요하면** 제공되는 KlafiGraph 하위 Template을 쓴다: `SimpleAgent` · `RAGAgent` · `SupervisorAgent`.
 - **저수준 제어**가 필요하면 `BaseGraph`를 직접 상속(`build() -> StateGraph`)한다 — Hook 기본 탑재 없이 완전 수동.
 
-예제: [examples/support_platform/agents/](examples/support_platform/agents/).
+예제: [examples/support_platform/app/agents/](examples/support_platform/app/agents/).
 
 ---
 
@@ -163,7 +163,7 @@ providers:
   fast: { type: openai,    model: gpt-4o-mini }
 ```
 
-각 Agent에는 config의 정책·Checkpoint가 자동 적용되고(가드레일은 코드로 부착), Registry(owner/version)에도 등록된다. 동작하는 예제: [examples/support_platform/](examples/support_platform/) (`PYTHONPATH=examples python -m support_platform.demo`).
+각 Agent에는 config의 정책·Checkpoint가 자동 적용되고(가드레일은 코드로 부착), Registry(owner/version)에도 등록된다. 동작하는 예제: [examples/support_platform/](examples/support_platform/) (`cd examples/support_platform && python demo.py`).
 
 ---
 
@@ -396,8 +396,8 @@ app = create_app(server)     # FastAPI: /agents/{id}/invoke · /stream · /resum
 프레임워크 기능 전부를 **3-역할 분리 프로젝트**로 구성한 예제. 자세한 구조는 [examples/support_platform/README.md](examples/support_platform/README.md).
 
 ```bash
-PYTHONPATH=examples python -m support_platform.demo                        # CLI 데모
-uvicorn support_platform.server:app --app-dir examples --port 8078         # HTTP 서비스 → /docs
+cd examples/support_platform && python demo.py                # CLI 데모
+cd examples/support_platform && uvicorn server:app --port 8078   # HTTP 서비스 → /docs
 ```
 
 `/docs`(Swagger)에서 `support`(ReAct+Tool) · `triage`(노드별 모델·툴) · `schedule`(Skill) 3종을 바로 호출할 수 있다. 에이전트별 curl 예제는 [examples/support_platform/README.md](examples/support_platform/README.md#실행).

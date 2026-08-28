@@ -1,14 +1,14 @@
 """로컬 데모 러너 (CLI) — 서버 없이 플랫폼 전 기능을 한 번에 확인.
 
 실제 서비스 진입점은 server.py. 이 파일은 개발/검증용이라 없어도 무방.
-실행:  python -m support_platform.demo   (examples/ 에서 — support_platform 이 패키지)
+실행(이 폴더 안에서):  python demo.py
 """
 
-from .platform.bootstrap import build_app, metrics
+from common.bootstrap import build_app, metrics
 
-from .app.agents.schedule_agent import ScheduleAgent
-from .app.agents.support_agent import SupportAgent
-from .app.agents.triage_agent import TriageAgent
+from app.agents.schedule_agent import ScheduleAgent
+from app.agents.support_agent import SupportAgent
+from app.agents.triage_agent import TriageAgent
 
 from klafi.core import ExecutionContext
 from klafi.core.exceptions import GuardrailException
