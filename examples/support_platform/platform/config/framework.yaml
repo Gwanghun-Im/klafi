@@ -1,0 +1,7 @@
+# framework.yaml — 플랫폼 기본 배선 (공통개발자)
+# 역할: 서비스명 + 체크포인터/스토어 선택. 기본은 로컬 memory.
+# 로드 키: service · checkpoint · store
+# 계층: 이 파일이 base, environments/<env>.yaml 이 위에 덮인다(KLAFI_ENV=postgres 등).
+service: support-platform
+checkpoint: memory
+store: memory

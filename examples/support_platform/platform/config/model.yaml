@@ -1,0 +1,17 @@
+# model.yaml — 모델 alias→provider 매핑 (공통개발자)
+# 역할: 업무코드엔 alias(main/fast/expert)만 노출. 실제 모델명·키(.env: ANTHROPIC_API_KEY)·단가는 여기 한 곳.
+#        노드별로 다른 alias 를 골라 쓴다(triage: fast/expert).
+# 로드 키: providers.<alias> = {type, model, cost?, fallback?, policy?}
+#
+# cost: [USD/1k prompt, USD/1k completion] — Token×단가로 trace 에 klafi.cost_usd 기록(OBS-11/MOD-07).
+#   선택 항목이다: 빼면 비용 계산이 꺼진다. 수기 입력이라 실제 벤더 단가와 표류할 수 있는 '추정치'다.
+providers:
+  main:
+    type: anthropic
+    model: claude-haiku-4-5-20251001
+  fast: # 분류·라우팅 등 값싼 작업
+    type: anthropic
+    model: claude-haiku-4-5-20251001
+  expert: # 심층 답변 (운영: 상위 모델로 교체)
+    type: anthropic
+    model: claude-haiku-4-5-20251001 # ⚠️ 데모라 main/fast 와 '같은' 모델이다.

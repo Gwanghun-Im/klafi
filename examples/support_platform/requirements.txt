@@ -1,0 +1,17 @@
+# support_platform 자체 의존성 — 이 폴더만 복사/zip 해도 이 파일 하나로 설치된다.
+#
+#   pip install -r requirements.txt
+#
+# klafi 는 아직 PyPI에 없으므로 git 설치를 쓴다. 실제 GitHub 주소로 바꾸고,
+# 재현성을 위해 브랜치가 아니라 태그(@v0.1.0 등)를 박아두는 걸 권장한다.
+klafi[server,anthropic] @ git+https://github.com/<your-org>/klafi.git@v0.1.0
+
+# klafi 저장소 안에서 개발 중이라면 위 줄을 지우고 이걸 쓴다(수정 즉시 반영):
+#   pip install -e ../..[server,anthropic]
+
+# ASGI 서버 — klafi[server]는 fastapi만 주고 실행기는 앱이 고른다.
+uvicorn[standard]>=0.30
+
+# 선택: KLAFI_ENV=postgres 로 실행할 때만 필요.
+# langgraph-checkpoint-postgres>=2.0
+# psycopg[binary]>=3.1

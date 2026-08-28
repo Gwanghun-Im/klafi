@@ -1,0 +1,11 @@
+# Environment 계층 — 운영형 PostgreSQL 배선
+# DSN은 config에 평문 저장하지 않는다(SEC-05). 환경변수로 주입:
+#   .env → KLAFI_PG_DSN=postgresql://user:pass@host:5433/db
+checkpoint:
+  type: postgres
+  conn_string: ${KLAFI_PG_DSN}
+  min_size: 1
+  max_size: 10
+store:
+  type: postgres
+  conn_string: ${KLAFI_PG_DSN}
