@@ -51,7 +51,8 @@
   details pre { margin:6px 0 0; background:#0c0e12; border:1px solid var(--line); border-radius:8px;
                 padding:10px; overflow:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
 
-  .hitl { border-color:var(--warn) !important; background:#241d0f !important; }
+  /* pre-wrap(일반 버블용)이면 innerHTML 템플릿의 줄바꿈·들여쓰기가 그대로 렌더돼 카드가 세로로 늘어난다. */
+  .hitl { border-color:var(--warn) !important; background:#241d0f !important; white-space:normal !important; }
   .hitl .head { color:var(--warn); font-weight:600; margin-bottom:6px; }
   .hitl .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
   .hitl input { flex:1; min-width:140px; }
