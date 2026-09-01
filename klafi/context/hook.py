@@ -10,12 +10,15 @@ Checkpoint에는 원본 히스토리가 그대로 남는다(감사·재현 목�
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from klafi.core.context import ExecutionContext
 from klafi.core.hook import Hook
 
 from .manager import ContextManager
+
+_log = logging.getLogger("klafi.context")
 
 
 class ContextHook(Hook):
@@ -41,4 +44,13 @@ class ContextHook(Hook):
         messages = state.get(self._key)
         if not messages or not self._cm.over_threshold(messages):
             return
-        state[self._key] = self._cm.reduce(messages)  # in-place: 이 노드의 view만 축소
+        reduced = self._cm.reduce(messages)
+        if reduced is messages:
+            return  # 임계 초과지만 줄일 오래된 메시지가 없음(전부 중요/최근) → no-op
+        state[self._key] = reduced  # in-place: 이 노드의 view만 축소
+        # CNT: 압축이 실제 발동했음을 남긴다(관찰성 — 조용히 일어나지 않게). KLAFI_LOG_LEVEL=INFO 로 보임.
+        _log.info(
+            "context.compress node=%s messages=%d→%d tokens=%d→%d",
+            node, len(messages), len(reduced),
+            self._cm.count_tokens(messages), self._cm.count_tokens(reduced),
+        )
