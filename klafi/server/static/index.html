@@ -73,7 +73,7 @@
   #composer button#stream, #composer button#resume { background:transparent; color:var(--muted); font-weight:500; }
   #composer button#stream:hover, #composer button#resume:hover { color:var(--fg); border-color:var(--muted); }
   #composer button#stop { background:var(--bad); border-color:var(--bad); color:#2a0808; }
-  #composer button:disabled { opacity:.45; cursor:not-allowed; }
+  button:disabled { opacity:.45; cursor:not-allowed; }  /* composer·HITL(.ok/.no) 공통 — 눌린 뒤 비활성 표시 */
   .typing .bubble::after { content:"▋"; animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
 </style>
@@ -187,7 +187,9 @@ function interruptOf(body) {
 function renderFields(payload) {
   if (payload == null) return "";
   if (typeof payload !== "object") return `<div class="fld"><span class="v">${esc(String(payload))}</span></div>`;
-  const rows = Object.entries(payload).map(([k, v]) => {
+  const entries = Object.entries(payload);
+  if (!entries.length) return "";                 // 빈 payload({})는 휑한 빈 그리드 대신 생략
+  const rows = entries.map(([k, v]) => {
     const disp = typeof v === "number" ? v.toLocaleString()
       : v && typeof v === "object" ? JSON.stringify(v) : String(v);
     return `<div class="fld"><span class="k">${esc(k)}</span><span class="v">${esc(disp)}</span></div>`;
@@ -223,7 +225,7 @@ function renderApproval(agentId, pend, streaming) {
   const comment = b.querySelector("input");
   const decide = async approved => {
     if (busy) return;                        // 다른 요청 진행 중이면 승인 클릭 무시(중복 재개 방지)
-    b.querySelectorAll("button").forEach(x => x.disabled = true);  // 한 번만 결정 가능
+    b.querySelectorAll("button, input").forEach(x => x.disabled = true);  // 한 번만 결정 가능(버튼·사유입력 잠금)
     const decision = {approved, comment: comment.value || null, decided_by: $("#xuser").value || "trader"};
     b.insertAdjacentHTML("beforeend", `<div class="done">→ ${approved ? "승인" : "반려"}됨</div>`);
     if (streaming) {
