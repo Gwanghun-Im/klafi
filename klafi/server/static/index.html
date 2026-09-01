@@ -145,10 +145,13 @@ const setHint = () => { $("#hint").textContent = HINTS[$("#agent").value] || HIN
 const headers = () => { const h = {"Content-Type":"application/json"}; const u = $("#xuser").value.trim();
   if (u) h["X-User"] = u; return h; };
 // 네트워크 장애도 status 0으로 정규화 — throw로 새어나가면 typing 말풍선이 영구히 남는다.
+// 연결 dot 은 매 요청 결과로 갱신한다(boot 1회 판정이면 이후 서버가 죽어도 초록으로 남는다).
 async function api(path, opts={}) {
   let res;
   try { res = await fetch(path, {headers: headers(), ...opts}); }
-  catch (e) { return {status: 0, body: {error: "서버에 연결할 수 없습니다 (" + (e.message || "network") + ")"}}; }
+  catch (e) { $("#dot").className = "dot down";
+    return {status: 0, body: {error: "서버에 연결할 수 없습니다 (" + (e.message || "network") + ")"}}; }
+  $("#dot").className = "dot up";
   const t = await res.text(); let body; try { body = JSON.parse(t); } catch { body = t; }
   return {status: res.status, body};
 }
@@ -251,10 +254,12 @@ function renderApproval(agentId, pend, streaming) {
       await streamRequest(agentId, `/agents/${agentId}/resume/stream`, {thread_id: tid, decision});
     } else {
       setBusy(true);
+      // 승인 후 재개는 검색·보고서로 수십 초 걸릴 수 있다 — 무반응처럼 보이지 않게 작성중 표시.
+      const typing = bubble("bot", agentId, ""); typing.classList.add("typing");
       try {
         const r = await api(`/agents/${agentId}/resume`, {method:"POST", body: JSON.stringify({thread_id: tid, decision})});
         renderResponse(agentId, r);
-      } finally { setBusy(false); }
+      } finally { typing.remove(); setBusy(false); }
     }
   };
   b.querySelector(".ok").onclick = () => decide(true);
@@ -309,6 +314,7 @@ async function stream() {
 // 공통 스트리밍 렌더 — /stream 과 /resume/stream 이 공유. NDJSON(token/chunk/error)을 파싱해 실시간 갱신.
 async function streamRequest(agentId, url, payload) {
   const m = bubble("bot", agentId, ""), box = m.querySelector(".bubble").parentElement;
+  m.classList.add("typing");   // thinking: 첫 데이터가 오기 전까지 커서 표시
   const body = m.querySelector(".bubble");
   body.innerHTML = `<span class="chip">STREAM</span><span class="txt"></span>`;
   const txt = body.querySelector(".txt");
@@ -325,6 +331,7 @@ async function streamRequest(agentId, url, payload) {
 
   const fail = msg => {
     errored = true;
+    m.classList.remove("typing");
     body.querySelector(".chip")?.remove();
     body.insertAdjacentHTML("beforeend", `<div class="streamerr">⚠ ${esc(msg)}</div>`);
   };
@@ -342,6 +349,7 @@ async function streamRequest(agentId, url, payload) {
 
   const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
   const handle = line => {
+    m.classList.remove("typing");   // 첫 데이터 도착 → thinking 해제
     rawPre.textContent += line + "\n";
     let obj; try { obj = JSON.parse(line); } catch { return; }
     if (obj.error) {                                  // 서버 에러 청크(가드레일/권한/오류)
@@ -374,7 +382,7 @@ async function streamRequest(agentId, url, payload) {
   } catch (e) {                             // 중지 또는 스트림 도중 연결 끊김
     fail(e.name === "AbortError" ? "중지됨" : "스트림이 끊겼습니다");
   } finally {
-    aborter = null; setBusy(false);
+    m.classList.remove("typing"); aborter = null; setBusy(false);
   }
   if (!errored && !txt.textContent.trim()) txt.textContent = " (완료)";
 }
@@ -416,12 +424,14 @@ function clearText() { $("#text").value = ""; autosize(); }
 
 // ── 부트 ───────────────────────────────────────────────────────────────
 async function boot() {
-  try {
-    const {body} = await api("/agents");
-    $("#agent").innerHTML = (body || []).map(a => `<option value="${a.id}">${a.id} — ${a.name || ""}</option>`).join("");
-    $("#dot").className = "dot up";
-    setHint();
-  } catch { $("#dot").className = "dot down"; bubble("err", "system", "서버에 연결할 수 없습니다. 서버가 떠 있는지 확인하세요."); }
+  const r = await api("/agents");   // dot 은 api() 가 결과에 따라 up/down 갱신
+  if (r.status !== 200 || !Array.isArray(r.body)) {
+    $("#dot").className = "dot down";
+    bubble("err", "system", "서버에 연결할 수 없습니다. 서버가 떠 있는지 확인하세요.");
+    return;
+  }
+  $("#agent").innerHTML = r.body.map(a => `<option value="${a.id}">${a.id} — ${a.name || ""}</option>`).join("");
+  setHint();
 }
 $("#composer").addEventListener("submit", send);
 $("#stream").onclick = stream;
