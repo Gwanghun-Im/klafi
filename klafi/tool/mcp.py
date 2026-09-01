@@ -97,10 +97,12 @@ def connect_mcp(config: Any) -> McpTools:
 
     형식:
         servers:
-          fs: {command: npx, args: [...], transport: stdio, permission: fs:read}
-    각 서버의 `permission` → 그 서버 도구 전부의 required_permission(governance). 나머지 키는 그대로
-    MultiServerMCPClient 연결 설정으로 넘긴다. langchain-mcp-adapters 미설치면 친절한 에러.
-    서버가 없으면 빈 McpTools(예제 graceful degrade).
+          fs: {command: npx, args: [...], transport: stdio, permission: fs:read, timeout: 20}
+    각 서버의 `permission` → 그 서버 도구 전부의 required_permission(governance).
+    `timeout`(초, 선택) → 그 서버 도구 전부에 툴별 실행 타임아웃(느린 외부 호출이 에이전트 전체
+    예산을 잡아먹지 않게 빨리 실패). permission·timeout 은 KLAFI governance 키라 연결 설정에서
+    분리하고, 나머지 키만 그대로 MultiServerMCPClient 로 넘긴다. langchain-mcp-adapters 미설치면
+    친절한 에러. 서버가 없으면 빈 McpTools(예제 graceful degrade).
     """
     if isinstance(config, (str, Path)):
         p = Path(config)
@@ -120,14 +122,21 @@ def connect_mcp(config: Any) -> McpTools:
             "MCP 연결에는 langchain-mcp-adapters 가 필요합니다 — pip install 'klafi[mcp]'"
         ) from exc
 
-    perms = {name: (spec or {}).get("permission") for name, spec in servers.items()}
+    from klafi.runtime.policy import ExecutionPolicy
+
+    _klafi_keys = ("permission", "timeout")  # governance 키 — 연결설정에서 분리
     connections = {
-        name: _expand_env({k: v for k, v in (spec or {}).items() if k != "permission"})
+        name: _expand_env({k: v for k, v in (spec or {}).items() if k not in _klafi_keys})
         for name, spec in servers.items()
     }
     client = MultiServerMCPClient(connections)
     by_server: dict[str, list[Tool]] = {}
-    for name, perm in perms.items():
-        lc_tools = _sync(client.get_tools(server_name=name))  # 서버별로 받아 permission 부착
-        by_server[name] = [from_langchain_tool(t, required_permission=perm) for t in lc_tools]
+    for name, spec in servers.items():
+        perm = (spec or {}).get("permission")
+        timeout = (spec or {}).get("timeout")
+        policy = ExecutionPolicy(timeout=timeout) if timeout is not None else None
+        lc_tools = _sync(client.get_tools(server_name=name))  # 서버별로 받아 permission·timeout 부착
+        by_server[name] = [
+            from_langchain_tool(t, required_permission=perm, policy=policy) for t in lc_tools
+        ]
     return McpTools(by_server, client)

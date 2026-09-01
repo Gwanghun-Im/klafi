@@ -90,10 +90,13 @@ def _inject_fake_client(monkeypatch, tools):
 
 def test_connect_mcp_wraps_with_server_permission(monkeypatch):
     _inject_fake_client(monkeypatch, [_fake_lc("read_file")])
-    mt = connect_mcp({"servers": {"fs": {"command": "x", "transport": "stdio", "permission": "fs:read"}}})
+    mt = connect_mcp(
+        {"servers": {"fs": {"command": "x", "transport": "stdio", "permission": "fs:read", "timeout": 20}}}
+    )
     tools = mt.tools("fs")
     assert len(tools) == 1 and tools[0].name == "read_file"
     assert tools[0]._permission == "fs:read"  # 서버 permission 이 도구에 부착됨
+    assert tools[0]._policy is not None and tools[0]._policy.timeout == 20  # 서버 timeout → 툴별 정책
     assert [t.name for t in mt.all()] == ["read_file"]
 
 
