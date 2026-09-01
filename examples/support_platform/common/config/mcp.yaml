@@ -1,0 +1,13 @@
+# MCP 외부 도구 서버 (공통개발자). connect_mcp(common/mcp.py)가 읽어 KLAFI Tool 로 감싼다.
+# 각 서버의 permission → 그 서버 도구 전부의 required_permission(governance).
+# 비밀(API 키)은 평문 금지 — ${VAR} 로 .env 에서 주입한다(SEC-05).
+# 실제 연결: `pip install 'klafi[mcp]'` + npx + .env 의 TAVILY_API_KEY 필요.
+# 없으면 common/mcp.py 가 빈 리스트로 degrade → 예제는 MCP 없이도 그대로 동작.
+servers:
+  tavily:                                   # Tavily 웹 검색 MCP 서버
+    command: npx
+    args: ["-y", "tavily-mcp@latest"]
+    transport: stdio
+    env:
+      TAVILY_API_KEY: "${TAVILY_API_KEY}"   # .env 에서 주입
+    permission: web:search                  # tavily 도구는 web:search 권한 필요

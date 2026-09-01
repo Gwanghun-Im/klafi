@@ -84,6 +84,8 @@ class KlafiApp:
     hook_plan: Any = None  # HookPlan — config/hooks.yaml 로 훅·가드레일 에이전트별 적용
     server: Any = None  # AgentServer (lazy, server extra 필요)
     registry: AgentRegistry = field(default_factory=AgentRegistry)
+    # per-agent config.yaml 이 명시한 동시성 상한 {agent_id: n} — http_app 이 미들웨어에 넘긴다.
+    _agent_concurrency: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_config(
@@ -133,10 +135,49 @@ class KlafiApp:
         )
 
     # ── Agent 조립 (공유 리소스 주입) ────────────────────────────────────
-    def create(self, agent_cls: type[KlafiGraph], *, extra_hooks: list[Hook] | None = None) -> KlafiGraph:
+    @staticmethod
+    def _agent_config(agent_cls: type[KlafiGraph]) -> dict:
+        """에이전트 클래스와 같은 폴더의 config.yaml 을 읽는다 (co-located, 없으면 {}).
+
+        클래스의 모듈 파일 위치에서 찾으므로 자동탐색(register_package)·수동등록 모두 동작한다.
+        """
+        import sys
+        from pathlib import Path
+
+        mod = sys.modules.get(agent_cls.__module__)
+        path = getattr(mod, "__file__", None)
+        if not path:
+            return {}
+        cfg = Path(path).parent / "config.yaml"
+        if not cfg.exists():
+            return {}
+        import yaml
+
+        return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+
+    @staticmethod
+    def _draw_graph(agent: KlafiGraph) -> None:
+        """spec.print=True 면 컴파일된 그래프를 터미널(stdout)에 그린다 (부팅 시 1회).
+
+        grandalf 가 있으면 ASCII, 없으면 mermaid 텍스트로 폴백한다(추가 의존 없이 항상 동작).
+        """
+        try:
+            g = agent.compiled.get_graph()
+        except Exception as exc:  # noqa: BLE001 — 그래프 접근 실패는 기동을 막지 않는다
+            print(f"[klafi] {agent.spec.id}: 그래프를 그릴 수 없습니다 ({exc})")
+            return
+        print(f"\n=== agent graph: {agent.spec.id} ({agent.spec.name}) ===")
+        try:
+            print(g.draw_ascii())  # grandalf 설치 시 ASCII 트리
+        except Exception:  # noqa: BLE001 — grandalf 미설치 등 → mermaid 소스로
+            print(g.draw_mermaid())
+
+    def create(
+        self, agent_cls: type[KlafiGraph], *, extra_hooks: list[Hook] | None = None, policy: Any = None
+    ) -> KlafiGraph:
         # config/hooks.yaml 로 해석한 에이전트별 훅·가드레일 + 코드 extra_hooks
         planned = self.hook_plan.for_agent(agent_cls.spec.id) if self.hook_plan else []
-        return self.factory.create(agent_cls, extra_hooks=[*planned, *(extra_hooks or [])])
+        return self.factory.create(agent_cls, extra_hooks=[*planned, *(extra_hooks or [])], policy=policy)
 
     def register(
         self,
@@ -145,10 +186,49 @@ class KlafiApp:
         extra_hooks: list[Hook] | None = None,
         owner: str | None = None,
     ) -> KlafiGraph:
-        agent = self.create(agent_cls, extra_hooks=extra_hooks)
+        # per-agent config.yaml 의 policy 를 전역 위에 머지 → 이 에이전트에만 주입 (없으면 전역 그대로).
+        pol = self._agent_config(agent_cls).get("policy")
+        effective = (self.policy.merge(pol) if self.policy else ExecutionPolicy.from_config(pol)) if pol else None
+        agent = self.create(agent_cls, extra_hooks=extra_hooks, policy=effective)
+        if getattr(agent.spec, "print", False):  # 부팅 시 그래프를 터미널에 그린다
+            self._draw_graph(agent)
+        # 미들웨어용: '명시된' per-agent 동시성만 기록(전역 상속값은 전역 캡이 이미 담당).
+        if pol and pol.get("concurrency") is not None:
+            self._agent_concurrency[agent.spec.id] = pol["concurrency"]
         self.registry.register_agent(agent, owner=owner)  # Governance 기록
         self._server().register(agent, agent_id=agent.spec.id)  # 런타임 서비스 등록
         return agent
+
+    def register_package(self, package: Any, *, owner: str | None = None) -> "list[KlafiGraph]":
+        """package 하위 서브패키지를 훑어 KlafiGraph 하위 클래스를 자동 등록한다 (convention).
+
+        업무개발자는 app/agents/<name>/ 폴더만 떨구면 서비스된다 — bootstrap(공통개발자 영역)을
+        건드리지 않는다. `_` 로 시작하는 서브패키지는 건너뛴다(WIP·비활성). owner 는 생략 시
+        각 spec.owner 로 폴백한다(레지스트리가 `owner or spec.owner`).
+
+            app.register_package("app.agents")
+        """
+        import importlib
+        import pkgutil
+
+        mod = importlib.import_module(package) if isinstance(package, str) else package
+        registered: list[KlafiGraph] = []
+        seen: set[type] = set()
+        for info in pkgutil.iter_modules(mod.__path__):
+            if info.name.startswith("_"):
+                continue
+            sub = importlib.import_module(f"{mod.__name__}.{info.name}")
+            for obj in vars(sub).values():  # 서브패키지 __init__ 이 re-export 한 클래스만 본다
+                if (
+                    isinstance(obj, type)
+                    and issubclass(obj, KlafiGraph)
+                    and obj is not KlafiGraph
+                    and getattr(obj, "spec", None) is not None  # 구체 에이전트만(템플릿·베이스 제외)
+                    and obj not in seen
+                ):
+                    seen.add(obj)
+                    registered.append(self.register(obj, owner=owner))
+        return registered
 
     def memory(self, pii_filter: Any = None) -> Any:
         """플랫폼 공통 Long-Term Memory 래퍼 (Factory가 공유하는 Store)."""
@@ -172,6 +252,11 @@ class KlafiApp:
         """
         from klafi.server import create_app
 
-        # policy.yaml 의 concurrency → 서버 전역 동시 실행 상한(초과 시 429)
+        # 2단계 동시성: policy.yaml 의 concurrency = 전역 총량 캡, per-agent config.yaml = 에이전트별 캡.
         max_conc = getattr(self.policy, "concurrency", None) if self.policy else None
-        return create_app(self._server(), auth=auth, max_concurrency=max_conc)
+        return create_app(
+            self._server(),
+            auth=auth,
+            max_concurrency=max_conc,
+            per_agent_concurrency=dict(self._agent_concurrency),
+        )

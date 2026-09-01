@@ -18,10 +18,9 @@ from .context import ExecutionContext, bind_context, get_context
 from .exceptions import AgentExecutionException
 from .hook import (
     Hook,
-    _after,
-    _before,
     _error,
     _finally,
+    _transform,
     bind_hooks,
     is_control_flow,
     resolve_hooks,
@@ -235,7 +234,7 @@ class BaseGraph:
         pol = self._resolve_policy(policy)
         with bind_context(ctx):
             hooks = self._resolved_hooks()
-            _before(hooks, "before_agent", input, ctx)
+            input = _transform(hooks, "before_agent", input, lambda v: (v, ctx))
             try:
                 input = self._enter(input, ctx)  # @klafi_graph before 파이프라인
                 payload = self._retry_payload(input)
@@ -249,7 +248,7 @@ class BaseGraph:
                 )
                 self._mark_interrupt_state(ctx, result)
                 result = self._exit(result, ctx)  # @klafi_graph after 파이프라인
-                _after(hooks, "after_agent", input, result, ctx)
+                result = _transform(hooks, "after_agent", result, lambda v: (input, v, ctx), reverse=True)
                 return result
             except BaseException as exc:
                 if is_control_flow(exc):  # interrupt(HITL) → 실패 아님, WAITING_APPROVAL
@@ -273,7 +272,7 @@ class BaseGraph:
         pol = self._resolve_policy(policy)
         with bind_context(ctx):
             hooks = self._resolved_hooks()
-            _before(hooks, "before_agent", input, ctx)
+            input = _transform(hooks, "before_agent", input, lambda v: (v, ctx))
             try:
                 input = await self._aenter(input, ctx)  # @klafi_graph before 파이프라인
                 payload = self._retry_payload(input)
@@ -287,7 +286,7 @@ class BaseGraph:
                 )
                 self._mark_interrupt_state(ctx, result)
                 result = await self._aexit(result, ctx)  # @klafi_graph after 파이프라인
-                _after(hooks, "after_agent", input, result, ctx)
+                result = _transform(hooks, "after_agent", result, lambda v: (input, v, ctx), reverse=True)
                 return result
             except BaseException as exc:
                 if is_control_flow(exc):  # interrupt(HITL) → 실패 아님, WAITING_APPROVAL
@@ -310,7 +309,7 @@ class BaseGraph:
         with bind_context(ctx):
             # 제너레이터가 소진될 때까지 Context를 유지해야 하므로 with 안에서 yield
             hooks = self._resolved_hooks()
-            _before(hooks, "before_agent", input, ctx)
+            input = _transform(hooks, "before_agent", input, lambda v: (v, ctx))
             try:
                 input = self._enter(input, ctx)  # @klafi_graph before 파이프라인
                 # TODO(stream): after 파이프라인(가드레일·미들웨어)은 스트리밍에 미적용.
@@ -344,7 +343,7 @@ class BaseGraph:
         ctx = self._make_context(context)
         with bind_context(ctx):
             hooks = self._resolved_hooks()
-            _before(hooks, "before_agent", input, ctx)
+            input = _transform(hooks, "before_agent", input, lambda v: (v, ctx))
             try:
                 input = await self._aenter(input, ctx)  # @klafi_graph before 파이프라인
                 # TODO(stream): after 파이프라인 미적용 — stream() 의 TODO 참조.

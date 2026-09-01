@@ -7,27 +7,22 @@
 체크포인터가 중단 상태를 보관하므로 재시작·다른 프로세스에서도 이어서 승인할 수 있다.
 
 주의: buy_stock은 mock(모의 체결)이다. 실제 거래 API를 붙이는 자리에 그대로 대체하면 된다.
-"""
 
-from typing import TypedDict
+구조: spec → agentSpec.py · state → state.py · 그래프 → 이 파일 (에이전트별 패키지).
+"""
 
 from langgraph.graph import END, START
 
-from klafi.core import AgentSpec, KlafiGraph, klafi_node
+from klafi.core import KlafiGraph, klafi_node
 from klafi.hitl import request_approval
 
-from ..tools import buy_stock, get_quote
-
-
-class StockState(TypedDict):
-    symbol: str
-    quantity: int
-    result: str
-    fill: dict
+from ...tools import buy_stock, get_quote
+from .agentSpec import spec
+from .state import StockState
 
 
 class StockAgent(KlafiGraph):
-    spec = AgentSpec(id="stock", name="Stock Trading Agent", version="1.0.0", agent_type="hitl", model="fast")
+    spec = spec
     state_schema = StockState
 
     def define(self):

@@ -51,7 +51,8 @@ def bind(v: Any, fn: Leaf) -> Any:
                 # ponytail: messages는 마지막 것만 본다. 방금 들어온/만들어진 내용이 항상
                 # 마지막이고, 앞의 것은 마지막이었을 때 이미 검사됐다. 이력 전체를 스캔해야
                 # 하면 이 슬라이스만 넓힌다.
-                out[k] = [*x[:-1], bind(x[-1], fn)]
+                nl = bind(x[-1], fn)  # 마지막이 안 바뀌면 리스트도 원본 그대로(불변 계약 유지)
+                out[k] = x if nl is x[-1] else [*x[:-1], nl]
             else:
                 out[k] = bind(x, fn)
         return out if any(out[k] is not v[k] for k in v) else v

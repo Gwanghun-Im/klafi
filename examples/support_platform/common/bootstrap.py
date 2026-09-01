@@ -38,7 +38,7 @@ def auth(request) -> dict:
     user = request.headers.get("x-user")
     return {
         "user_id": user or "anon",
-        "permissions": ["orders:read", "policy:read", "trades:write"] if user else [],
+        "permissions": ["orders:read", "policy:read", "trades:write", "web:search"] if user else [],
     }
 
 
@@ -46,12 +46,6 @@ def build_app():
     _load_env()  # .env 를 os.environ 에 먼저 로드 → from_config 의 setup_logging 이 KLAFI_LOG_LEVEL 을 본다
     from klafi.app import KlafiApp
     from klafi.context.memory import user_scope
-
-    from app.agents.faq_agent import FaqAgent
-    from app.agents.schedule_agent import ScheduleAgent
-    from app.agents.stock_agent import StockAgent
-    from app.agents.support_agent import SupportAgent
-    from app.agents.triage_agent import TriageAgent
 
     # 훅·가드레일은 전부 코드로 관리한다(hooks.yaml 없음). platform_hooks 는 항상 적용.
     # KLAFI_ENV=postgres → config/environments/postgres.yaml 계층이 얹혀 실 DB 사용.
@@ -63,12 +57,9 @@ def build_app():
     # context 훅은 gateway 요약모델이 필요해 조립 후 주입한다(등록되는 전 에이전트에 적용).
     app.factory.base_hooks.append(context_hook(app.gateway))
 
-    # 업무 Agent 등록 — KlafiGraph 클래스만 (인프라 코드 없이)
-    app.register(ScheduleAgent, owner="team-cs")  # Skill(툴+프롬프트) 바인딩
-    app.register(SupportAgent, owner="team-cs")
-    app.register(TriageAgent, owner="team-cs")  # 노드별 다른 모델·툴
-    app.register(StockAgent, owner="team-invest")  # HITL 승인 게이트 (주식 매수)
-    app.register(FaqAgent, owner="team-cs")  # 채팅 호환(MessagesState) 단순 대화 에이전트
+    # 업무 Agent 자동 등록 — app/agents/<name>/ 폴더를 훑는다(convention).
+    # 업무개발자는 폴더만 떨구면 서비스된다. owner 는 각 agentSpec.py 의 spec.owner 사용.
+    app.register_package("app.agents")
 
     # 플랫폼 공통 Long-Term Memory 사전 시드 (운영: 사용자 온보딩 시 기록)
     app.memory().remember(user_scope("u1"), "pref", {"lang": "ko"})

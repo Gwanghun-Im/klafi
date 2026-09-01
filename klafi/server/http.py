@@ -173,12 +173,17 @@ def create_app(
     auth: AuthAdapter | None = None,
     title: str = "KLAFI Agent Server",
     max_concurrency: int | None = None,
+    per_agent_concurrency: "dict[str, int] | None" = None,
 ) -> FastAPI:
-    """max_concurrency: 서버 전역 동시 실행 상한. 초과 요청은 429로 즉시 거절(백프레셔)."""
+    """동시 실행 상한(백프레셔). 초과 요청은 429로 즉시 거절.
+
+    max_concurrency: 서버 전역 총량 캡. per_agent_concurrency: {agent_id: n} 에이전트별 캡.
+    2단계 — 요청은 전역·에이전트 캡을 둘 다 통과해야 실행된다.
+    """
     app = FastAPI(title=title)
 
     # 동시 실행 상한은 ASGI 미들웨어 한 곳에서 관리한다(엔드포인트마다 복붙 금지).
-    install_concurrency_limit(app, max_concurrency)
+    install_concurrency_limit(app, max_concurrency, per_agent_concurrency)
 
     @app.exception_handler(AgentNotFound)
     async def _not_found(_req: Request, exc: AgentNotFound) -> JSONResponse:

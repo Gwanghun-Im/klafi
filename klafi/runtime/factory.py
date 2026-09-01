@@ -40,8 +40,13 @@ class ExecutionFactory:
             return None
         return self.gateway.model(alias)
 
-    def create(self, agent_cls: type[KlafiGraph], *, extra_hooks: list[Hook] | None = None) -> KlafiGraph:
+    def create(
+        self, agent_cls: type[KlafiGraph], *, extra_hooks: list[Hook] | None = None, policy: Any = None
+    ) -> KlafiGraph:
         """KlafiGraph 하위 클래스로 실행환경이 조립된 Agent 인스턴스 생성 (FAC-01).
+
+        policy: 에이전트별 유효 policy 오버라이드. None 이면 factory 공통 policy 를 쓴다
+        (per-agent config.yaml → app.register 가 전역 위에 머지해 넘긴다).
 
         조립 계약: agent_cls 는 (1) 클래스 레벨 `spec` 을 갖고 (2) factory 가 주입하는 키워드
         (spec/model/checkpointer/store/policy/hooks) 만으로 생성 가능해야 한다.
@@ -66,7 +71,7 @@ class ExecutionFactory:
                     model=self.model(spec.model),
                     checkpointer=self.checkpointer,
                     store=self.store,
-                    policy=self.policy,
+                    policy=policy if policy is not None else self.policy,
                     hooks=[*self.base_hooks, *(extra_hooks or [])],
                 )
             except TypeError as exc:

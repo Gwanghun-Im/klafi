@@ -4,21 +4,22 @@
 채팅 프론트에서 바로 쓰려면 이렇게 state_schema=MessagesState 로 define() 한다 —
 가장 단순한 대화 에이전트(툴/HITL 없음). 툴이 필요하면 support_agent 처럼 bind_tools 를 얹으면 된다.
 
-(참고) 정형 입출력이면 템플릿이 더 짧다:  class Faq(SimpleAgent): spec = AgentSpec(..., model="main")
-       단, 그 경우 입력은 {"question": ...} 이고 Swagger/API 로 호출한다.
+구조: spec → agentSpec.py · state → state.py · 그래프 → 이 파일 (에이전트별 패키지).
 """
 
 from langchain_core.messages import SystemMessage
-from langgraph.graph import END, START, MessagesState
+from langgraph.graph import END, START
 
-from klafi.core import AgentSpec, KlafiGraph, klafi_node
+from klafi.core import KlafiGraph, klafi_node
 from klafi.model import init_chat_model
+
+from .agentSpec import spec
+from .prompt import SYSTEM
+from .state import MessagesState
 
 
 class FaqAgent(KlafiGraph):
-    spec = AgentSpec(
-        id="faq", name="FAQ Agent", version="1.0.0", agent_type="chat", model="main", owner="team-cs"
-    )
+    spec = spec
     state_schema = MessagesState
 
     def define(self):
@@ -26,7 +27,7 @@ class FaqAgent(KlafiGraph):
 
         @klafi_node("agent")
         def agent(state):
-            sys = SystemMessage("너는 친절한 FAQ 도우미다. 간결하게 한국어로 답하라.")
+            sys = SystemMessage(SYSTEM)
             return {"messages": [llm.invoke([sys, *state["messages"]])]}
 
         self.add_node("agent", agent)

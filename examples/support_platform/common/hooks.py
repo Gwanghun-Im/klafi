@@ -14,7 +14,7 @@ from klafi.core import Hook
 from klafi.events import EventHook
 from klafi.guardrail import GuardrailHook, pii, prompt_injection, warn_only
 
-from .guardrails import no_secrets
+from .guardrails import mask_phone, no_secrets
 
 
 class MetricsHook(Hook):
@@ -45,17 +45,17 @@ class MetricsHook(Hook):
 metrics = MetricsHook()
 
 # 플랫폼 공통 가드레일 — 전 에이전트 4스테이지.
-#   input        = 사용자 입력 금칙어(no_secrets)               — before_agent
-#   output       = 최종 응답 PII                                — after_agent
-#   model        = LLM 프롬프트 인젝션                          — before_model
-#   model_output = LLM 응답 PII(structured output 포함)         — after_model
+#   input        = 사용자 입력 금칙어(no_secrets)                    — before_agent
+#   output       = 최종 응답 전화번호 마스킹(mask_phone) + PII 경고    — after_agent
+#   model        = LLM 프롬프트 인젝션                                — before_model
+#   model_output = LLM 응답 PII(structured output 포함)              — after_model
 #
-# 등급 정책: 금칙어·인젝션은 차단(BLOCK), PII는 경고(WARN).
+# 등급 정책: 금칙어·인젝션은 차단(BLOCK), 전화번호는 마스킹(MASK), 그 외 PII는 경고(WARN).
 # 상담 답변에는 주문자 이메일 등이 정상적으로 등장할 수 있어 전면 차단하면 오탐이 크다.
-# 대신 위반은 severity=warn 으로 전부 기록되므로 운영에서 탐지·집계할 수 있다.
+# mask_phone 은 차단 대신 치환 → after_agent 가 값 스레딩(_transform)이라 전 에이전트 출력에 적용된다.
 platform_guardrails = GuardrailHook(
     input=[no_secrets],
-    output=[warn_only(pii)],
+    output=[mask_phone, warn_only(pii)],
     model=[prompt_injection],
     model_output=[warn_only(pii)],
 )

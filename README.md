@@ -143,18 +143,18 @@ class QAAgent(KlafiGraph):
 ```python
 # bootstrap.py  (조립) — server.py/demo.py 공용
 from klafi.app import KlafiApp
-from agents.qa_agent import QAAgent
-from agents.summarize_agent import SummarizeAgent
 
 def build_app():
     app = KlafiApp.from_config("config")       # 모델·정책·Checkpoint 조립
-    app.register(QAAgent, owner="team-qa")
-    app.register(SummarizeAgent, owner="team-doc")
-    return app
+    app.register_package("agents")             # agents/ 하위를 자동 등록(convention)
+    return app                                 #   owner 는 각 spec.owner 사용, _접두 폴더는 스킵
 
 # server.py  (실제 진입점)
 app = build_app().http_app()                   # 등록된 전 Agent를 HTTP 서비스
 ```
+
+> 업무개발자는 `agents/` 에 파일/폴더만 떨구면 서비스된다 — bootstrap(공통개발자 영역)을 안 건드린다.
+> 명시적으로 통제하고 싶으면 `app.register(QAAgent, owner="team-qa")` 로 하나씩 등록해도 된다.
 
 ```yaml
 # config/model.yaml — 운영 전환은 업무코드 변경 없이 여기만

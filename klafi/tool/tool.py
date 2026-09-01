@@ -65,10 +65,15 @@ class Tool:
             )
 
     def _validate_input(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        if self._input_schema is None:
+        from pydantic import BaseModel
+
+        schema = self._input_schema
+        # pydantic 모델일 때만 KLAFI 검증. MCP 도구처럼 args_schema 가 JSON-schema dict 면
+        # (호출 불가) 검증은 생략하고 도구 자체 검증에 맡긴다 — 단, 스키마는 LLM 바인딩용으로 보존한다.
+        if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
             return kwargs
         try:
-            model = self._input_schema(**kwargs)
+            model = schema(**kwargs)
         except Exception as exc:  # noqa: BLE001
             raise ToolValidationError(f"tool '{self.name}' 입력 검증 실패: {exc}", tool=self.name) from exc
         return model.model_dump()

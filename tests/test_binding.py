@@ -95,3 +95,23 @@ def test_metadata_numbers_do_not_trigger_pii():
     # 통짜 투영이었다면 \d{16} 이 토큰수에 걸려 BLOCK. 이제 content만 보므로 통과.
     out = enforce([pii], {"messages": [msg]}, "output")
     assert out["messages"][-1].content == "주문 확인됐습니다"
+
+
+def test_unchanged_messages_state_returns_same_object():
+    """치환이 없으면 messages 를 든 state 도 원본 객체 그대로 반환해야 한다.
+
+    (전엔 messages 분기가 항상 새 리스트를 만들어, 변경이 없어도 `is not` 이 되어 공통 훅의
+    mask_ignored 오탐을 유발했다.)
+    """
+    state = {"messages": [AIMessage("안녕", id="m1")], "route": "x"}
+    out = bind(state, lambda s: s)  # 아무것도 안 바꾸는 함수
+    assert out is state  # 새 객체 아님
+    assert out["messages"] is state["messages"]  # 리스트도 재구성 안 함
+
+
+def test_changed_last_message_rebuilds_list():
+    state = {"messages": [AIMessage("keep", id="a"), AIMessage("hi", id="b")]}
+    out = bind(state, UP)  # 마지막 content 만 대문자
+    assert out is not state
+    assert out["messages"][-1].content == "HI"
+    assert out["messages"][0] is state["messages"][0]  # 앞 메시지는 그대로(불변)

@@ -1,0 +1,3 @@
+# faq 에이전트별 설정 (co-located). 전역 policy.yaml 위에 명시 키만 덮음.
+policy:
+  concurrency: 4   # 가장 값싼 단순 대화 — 넉넉히 (전역 총량 4)

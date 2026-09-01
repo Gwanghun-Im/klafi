@@ -6,9 +6,9 @@
 
 from common.bootstrap import build_app, metrics
 
-from app.agents.schedule_agent import ScheduleAgent
-from app.agents.support_agent import SupportAgent
-from app.agents.triage_agent import TriageAgent
+from app.agents.schedule import ScheduleAgent
+from app.agents.support import SupportAgent
+from app.agents.triage import TriageAgent
 
 from klafi.core import ExecutionContext
 from klafi.core.exceptions import GuardrailException

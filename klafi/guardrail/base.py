@@ -227,9 +227,9 @@ class GuardrailHook(Hook):
     """공통 훅 — 데코레이터를 붙일 수 없는 경계(LLM·Tool)까지 가드레일을 실어 나른다.
 
     관측(로깅·트레이싱)은 훅, 판정·치환은 가드레일(enforce가 실행)이라는 축을 유지한다.
-    model/tool 경계는 반환값이 실제 값을 교체한다(gateway/tool 이 _transform 으로 발화).
-    agent 경계(before/after_agent)는 그래프 파이프라인(@klafi_graph)이 담당하므로, 여기서
-    치환이 나오면 무시되고 mask_ignored 경고를 남긴다.
+    agent·model·tool 경계 **모두 반환값이 실제 값을 교체**한다(_transform 으로 발화) — input/
+    model/tool 은 스트리밍에서도, agent output 은 invoke/ainvoke 에서 마스킹된다. (stream 은 최종
+    결과가 없어 after_agent 자체가 발화하지 않으므로 출력 마스킹은 @klafi_node/@klafi_graph 로.)
     """
 
     priority = 1  # 가장 바깥: Input을 다른 Hook보다 먼저 검사
@@ -251,22 +251,12 @@ class GuardrailHook(Hook):
         self._model = model or []  # LLM Prompt 경계 (GRD-04/06)
         self._model_output = model_output or []  # LLM 응답 경계
 
-    # Graph(=Agent) before/after — 그래프 경계는 치환 불가(파이프라인이 담당) → 경고
-    def before_agent(self, input: Any, ctx: ExecutionContext | None) -> None:
-        self._observe(self._input, input, "input", ctx)
+    # Graph(=Agent) before/after — 반환값이 input/result 를 교체한다 (_transform).
+    def before_agent(self, input: Any, ctx: ExecutionContext | None) -> Any:
+        return enforce(self._input, input, "input", ctx) if self._input else None
 
-    def after_agent(self, input: Any, result: Any, ctx: ExecutionContext | None) -> None:
-        self._observe(self._output, result, "output", ctx)
-
-    def _observe(self, guards: list[Guardrail], value: Any, stage: str, ctx: ExecutionContext | None) -> None:
-        if not guards:
-            return
-        if enforce(guards, value, stage, ctx) is not value:
-            _violation_log.warning(
-                "guardrail.mask_ignored stage=%s — 공통 훅의 이 경계에서는 치환이 적용되지 않습니다. "
-                "마스킹은 @klafi_node/@klafi_graph 에 붙이세요",
-                stage,
-            )
+    def after_agent(self, input: Any, result: Any, ctx: ExecutionContext | None) -> Any:
+        return enforce(self._output, result, "output", ctx) if self._output else None
 
     # Model(LLM) before/after — 반환값이 프롬프트/응답을 교체한다
     def before_model(self, model: str, prompt: str, ctx: ExecutionContext | None) -> Any:

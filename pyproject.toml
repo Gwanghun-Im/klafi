@@ -1,6 +1,6 @@
 [project]
 name = "klafi"
-version = "0.1.0"
+version = "0.1.2"
 description = "KLAFI — Enterprise Agentic AI Engineering Framework"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,13 +10,15 @@ dependencies = [
     "pyyaml>=6",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
-    "fastapi>=0.110",           # Agent Server(HTTP, §19 F13)가 핵심 기능이라 코어. 실행기(uvicorn)는 앱이 고름
+    "fastapi>=0.110", # Agent Server(HTTP, §19 F13)가 핵심 기능이라 코어. 실행기(uvicorn)는 앱이 고름
+    "grandalf>=0.8",
 ]
 
 [project.optional-dependencies]
 server = ["fastapi>=0.110"]     # 하위호환 alias — fastapi 는 이미 코어라 no-op(기존 klafi[server] 유지)
 openai = ["openai>=1.0", "langchain-openai>=0.2"]
 anthropic = ["anthropic>=0.40", "langchain-anthropic>=0.2"]
+mcp = ["langchain-mcp-adapters>=0.1"]  # MCP 외부 도구 연결 (connect_mcp)
 
 [build-system]
 requires = ["hatchling"]

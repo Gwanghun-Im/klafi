@@ -1,6 +1,7 @@
 # policy.yaml — 실행 정책 (공통개발자, Execution Engine)
-# 역할: 모든 Agent 실행에 적용되는 timeout/재시도 + 서버 전역 동시 상한.
+# 역할: 모든 Agent 실행의 기본값 — timeout/재시도 + 서버 전역 동시 총량 캡.
+#       에이전트별 override 는 app/agents/<name>/config.yaml (명시 키만 이 값을 덮음).
 # 로드 키: timeout(초) · max_retries · concurrency
 timeout: 30
 max_retries: 1
-concurrency: 2   # 서버 전역 동시 실행 상한. 초과 요청은 429(백프레셔). 미설정 시 무제한
+concurrency: 4   # 서버 전역 총량 캡(2단계). 에이전트별 캡은 각 config.yaml. 미설정 시 무제한

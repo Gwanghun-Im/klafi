@@ -1,0 +1,3 @@
+# triage 에이전트별 설정 (co-located). 나머지 키(timeout·retry·backoff)는 전역 상속.
+policy:
+  concurrency: 3   # 분류는 값싸서 개별 캡을 넉넉히 (전역 총량 4 안에서)

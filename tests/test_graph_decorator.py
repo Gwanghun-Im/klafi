@@ -149,15 +149,39 @@ def test_mask_in_node_pipeline_replaces_result():
     assert A().invoke({"q": "x", "a": ""})["a"] == "***"
 
 
-def test_common_hook_warns_that_mask_is_ignored(caplog):
-    """훅은 값을 교체할 수 없다 — 마스킹이 조용히 사라지지 않도록 경고해야 한다."""
+def test_common_hook_after_agent_returns_masked_value():
+    """공통 훅의 after_agent 는 반환값으로 result 를 교체한다 (base_graph 가 _transform 으로 발화)."""
     from klafi.guardrail import GuardrailHook
 
     g = _const_guardrail(GuardrailResult(False, "PII", replacement={"a": "***"}), raw=True)
-    hook = GuardrailHook(output=[g])
-    with caplog.at_level(logging.WARNING, logger="klafi.guardrail"):
-        hook.after_agent({"q": "x"}, {"a": "a@b.com"}, None)
-    assert "mask_ignored" in caplog.text
+    assert GuardrailHook(output=[g]).after_agent({"q": "x"}, {"a": "a@b.com"}, None) == {"a": "***"}
+
+
+def test_common_hook_masks_input_and_output_through_invoke():
+    """공통 GuardrailHook(input/output) 의 마스킹이 invoke 를 관통해 실제로 적용된다."""
+    from klafi.guardrail import GuardrailHook
+
+    mask_in = _const_guardrail(GuardrailResult(False, "in", replacement="MASKED_IN"))
+    mask_out = _const_guardrail(GuardrailResult(False, "out", replacement="MASKED_OUT"))
+    hook = GuardrailHook(input=[mask_in], output=[mask_out])
+
+    class A(KlafiGraph):
+        spec = AgentSpec(id="ha", name="HA")
+        state_schema = State
+        observability = False
+
+        def define(self):
+            @klafi_node("n")
+            def node(state):
+                assert state["q"] == "MASKED_IN"  # 입력이 노드 전에 이미 마스킹됨
+                return {"a": "raw"}
+
+            self.add_node("n", node)
+            self.add_edge(START, "n")
+            self.add_edge("n", END)
+
+    out = A(hooks=[hook]).invoke({"q": "secret", "a": ""})
+    assert out["a"] == "MASKED_OUT"  # 출력도 공통 훅에서 마스킹됨
 
 
 def test_warn_only_preserves_raw_contract():

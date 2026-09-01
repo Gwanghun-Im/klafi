@@ -1,0 +1,3 @@
+# schedule 에이전트별 설정 (co-located). 전역 policy.yaml 위에 명시 키만 덮음.
+policy:
+  concurrency: 2   # Skill 바인딩 대화 — 중간 캡

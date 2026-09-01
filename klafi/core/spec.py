@@ -21,6 +21,7 @@ class AgentSpec(BaseModel):
     owner: str | None = None
     description: str | None = None
     agent_type: str | None = None  # simple / rag / supervisor / plan-executor / hitl
+    print: bool = False  # True 면 서버 부팅(등록) 시 컴파일된 그래프를 터미널에 그린다(디버깅/문서화)
 
     # 자동 주입 대상 설정 (실제 Adapter 연결은 이후 WS2/WS3에서). 지금은 식별자만.
     model: str | None = None  # Model Alias (MOD-02)

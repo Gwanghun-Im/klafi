@@ -1,0 +1,5 @@
+# stock 에이전트별 설정 (co-located). 전역 policy.yaml 위에 '명시한 키만' 덮어씀.
+policy:
+  timeout: 120     # HITL 승인 대기라 길게 (전역 30 → 120)
+  max_retries: 0   # 매수는 재시도 금지 (전역 1 → 0)
+  concurrency: 1   # 이 에이전트는 한 번에 하나만 (전역 총량 4 캡과 별개로 개별 캡)
