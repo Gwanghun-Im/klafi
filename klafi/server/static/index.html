@@ -5,75 +5,93 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KLAFI Chat</title>
 <style>
-  :root { --bg:#0f1115; --panel:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --muted:#8b93a1;
-          --accent:#5b8cff; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#ffb020; --user:#2a3350;
-          --scroll:#333a47; --scroll-hover:#4a5365; }
+  /* Material Design 3 다크 baseline 토큰 — 컴포넌트 라이브러리 없이 CSS 만으로 MD3 look.
+     (오프라인/사내망 안전: 외부 CDN·폰트 로드 없음. Roboto 는 설치돼 있으면 집는다.) */
+  :root { --bg:#141218; --panel:#211F26; --panel-hi:#2B2930; --panel-max:#36343B;
+          --line:#49454F; --fg:#E6E0E9; --muted:#CAC4D0;
+          --accent:#D0BCFF; --on-accent:#381E72; --accent-ctr:#4F378B; --on-accent-ctr:#EADDFF;
+          --bad:#F2B8B5; --bad-ctr:#8C1D18; --on-bad-ctr:#F9DEDC;
+          --warn:#FFD8A8; --warn-bg:#2A2117; --ok:#6DD58C;
+          --scroll:#49454F; --scroll-hover:#938F99; }
   * { box-sizing:border-box; }
-  /* 스크롤바 — OS 기본은 다크 배경에서 밝게 튄다. 얇고 어둡게, 호버 시에만 또렷하게.
-     Firefox는 scrollbar-*, Chrome/Safari/Edge는 ::-webkit-scrollbar 를 쓴다. */
+  /* 스크롤바 — OS 기본은 다크 배경에서 밝게 튄다. 얇고 어둡게, 호버 시에만 또렷하게. */
   * { scrollbar-width:thin; scrollbar-color:var(--scroll) transparent; }
   ::-webkit-scrollbar { width:10px; height:10px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:8px;
-    border:2px solid transparent; background-clip:content-box; }  /* 여백을 둬 더 얇아 보이게 */
+    border:2px solid transparent; background-clip:content-box; }
   ::-webkit-scrollbar-thumb:hover { background:var(--scroll-hover); background-clip:content-box; }
   ::-webkit-scrollbar-corner { background:transparent; }
   html, body { height:100%; margin:0; }
-  body { font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",ui-sans-serif,sans-serif;
+  body { font:14px/1.5 Roboto,"Noto Sans KR",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
          background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
-  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px;
+  /* Top app bar — surface-container, 구분선 대신 면 색으로 층을 만든다(MD3 방식) */
+  header { padding:10px 16px; background:var(--panel); display:flex; gap:10px;
            align-items:center; flex-wrap:wrap; }
   header .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
   header .dot.up { background:var(--ok); } header .dot.down { background:var(--bad); }
-  header b { font-size:14px; letter-spacing:.3px; }
+  header b { font-size:15px; font-weight:500; letter-spacing:.2px; }
   header .sp { flex:1; }
-  select, input, button, textarea { font:inherit; color:var(--fg); background:var(--panel);
-           border:1px solid var(--line); border-radius:8px; padding:7px 10px; }
+  select, input, textarea { font:inherit; color:var(--fg); background:var(--panel-hi);
+           border:1px solid transparent; border-radius:12px; padding:8px 12px; }
   header input { width:96px; } header select { min-width:150px; }
-  button { cursor:pointer; }
-  button.icon { background:transparent; border-color:var(--line); color:var(--muted); }
+  :is(select,input,textarea):focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+  /* 버튼 공통 = MD3 pill(fully rounded) + hover state layer(brightness ≈ 8% 레이어) */
+  button { font:inherit; cursor:pointer; border:none; border-radius:20px; padding:8px 16px;
+           color:var(--fg); background:var(--panel-hi); }
+  button:hover:not(:disabled) { filter:brightness(1.12); }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  button.icon { background:transparent; color:var(--muted); }
+  button.icon:hover:not(:disabled) { background:var(--panel-hi); filter:none; }
   a { color:var(--accent); text-decoration:none; }
 
   #log { flex:1; overflow-y:auto; padding:20px 16px 8px; display:flex; flex-direction:column; gap:14px;
          max-width:860px; width:100%; margin:0 auto; }
   .msg { display:flex; gap:10px; max-width:82%; }
-  .msg .av { width:28px; height:28px; border-radius:8px; flex:none; display:grid; place-items:center;
-             font-size:14px; background:var(--panel); border:1px solid var(--line); }
-  .msg .bubble { padding:9px 13px; border-radius:12px; white-space:pre-wrap; word-break:break-word; }
+  .msg .av { width:30px; height:30px; border-radius:50%; flex:none; display:grid; place-items:center;
+             font-size:14px; background:var(--panel-hi); }
+  /* 말풍선 — MD3 shape: 20px, 화자 쪽 꼬리만 4px. 컨테이너 색으로 구분(테두리 없음). */
+  .msg .bubble { padding:10px 14px; border-radius:20px; white-space:pre-wrap; word-break:break-word; }
   .msg.user { align-self:flex-end; flex-direction:row-reverse; }
-  .msg.user .bubble { background:var(--user); border:1px solid #33406a; border-bottom-right-radius:4px; }
-  .msg.bot .bubble { background:var(--panel); border:1px solid var(--line); border-bottom-left-radius:4px; }
-  .msg.err .bubble { background:#2a0e0e; border:1px solid var(--bad); color:#ffd7d7; }
+  .msg.user .bubble { background:var(--accent-ctr); color:var(--on-accent-ctr); border-bottom-right-radius:4px; }
+  .msg.bot .bubble { background:var(--panel-hi); border-bottom-left-radius:4px; }
+  .msg.err .bubble { background:var(--bad-ctr); color:var(--on-bad-ctr); }
   .msg .who { font-size:11px; color:var(--muted); margin:0 0 3px; }
+  /* MD3 assist chip */
   .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
-  .chip { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:20px; padding:1px 8px; }
+  .chip { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:2px 10px; }
   details { margin-top:6px; } summary { font-size:11px; color:var(--muted); cursor:pointer; }
-  details pre { margin:6px 0 0; background:#0c0e12; border:1px solid var(--line); border-radius:8px;
+  details pre { margin:6px 0 0; background:var(--bg); border:1px solid var(--line); border-radius:12px;
                 padding:10px; overflow:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
 
-  /* pre-wrap(일반 버블용)이면 innerHTML 템플릿의 줄바꿈·들여쓰기가 그대로 렌더돼 카드가 세로로 늘어난다. */
-  .hitl { border-color:var(--warn) !important; background:#241d0f !important; white-space:normal !important; }
-  .hitl .head { color:var(--warn); font-weight:600; margin-bottom:6px; }
+  /* HITL 카드 — elevated card(16px). pre-wrap 이면 innerHTML 템플릿 줄바꿈이 그대로 렌더돼 세로로 늘어난다. */
+  .hitl { background:var(--warn-bg) !important; border-radius:16px !important; white-space:normal !important;
+          box-shadow:0 1px 3px rgba(0,0,0,.4); }
+  .hitl .head { color:var(--warn); font-weight:500; margin-bottom:6px; }
   .hitl .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
-  .hitl input { flex:1; min-width:140px; }
+  .hitl input { flex:1; min-width:140px; background:var(--panel-hi); }
   .fields { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:8px 0; }
   .fld { display:contents; } .fld .k { color:var(--muted); } .fld .v { word-break:break-word; }
-  button.ok { background:var(--ok); border-color:var(--ok); color:#04231a; font-weight:600; }
-  button.no { background:var(--bad); border-color:var(--bad); color:#2a0808; font-weight:600; }
+  /* MD3: 확정 = filled(primary), 파괴적 = error tonal */
+  button.ok { background:var(--accent); color:var(--on-accent); font-weight:500; }
+  button.no { background:var(--bad-ctr); color:var(--on-bad-ctr); font-weight:500; }
   .done { font-size:11px; color:var(--muted); margin-top:8px; }
   .streamerr { color:var(--bad); margin-top:8px; }
 
-  /* align-items:flex-end — 기본값 stretch면 입력이 여러 줄로 늘 때 버튼까지 같이 커진다. */
-  form#composer { border-top:1px solid var(--line); padding:12px 16px; display:flex; gap:8px;
+  /* Composer — 검색바 스타일 pill 입력 + filled 주 액션. align-items:flex-end — stretch 면
+     입력이 여러 줄로 늘 때 버튼까지 같이 커진다. */
+  form#composer { padding:12px 16px 16px; display:flex; gap:8px;
                   align-items:flex-end; max-width:860px; width:100%; margin:0 auto; }
-  #composer textarea { flex:1; resize:none; max-height:140px; overflow-y:hidden; line-height:1.5; }
-  /* 세로 패딩으로 자체 높이를 갖게 해 stretch에 의존하지 않는다. */
-  #composer button { padding:8px 14px; font-weight:600; white-space:nowrap; }
-  #composer button#send { background:var(--accent); border-color:var(--accent); color:#fff; }
-  /* 보조 액션은 무게를 낮춰 주 액션(Invoke)이 먼저 읽히게 한다. */
-  #composer button#stream, #composer button#resume { background:transparent; color:var(--muted); font-weight:500; }
-  #composer button#stream:hover, #composer button#resume:hover { color:var(--fg); border-color:var(--muted); }
-  #composer button#stop { background:var(--bad); border-color:var(--bad); color:#2a0808; }
+  #composer textarea { flex:1; resize:none; max-height:140px; overflow-y:hidden; line-height:1.5;
+                       border-radius:24px; padding:10px 16px; }
+  /* 세로 패딩으로 자체 높이를 갖게 해 stretch 에 의존하지 않는다. */
+  #composer button { padding:10px 18px; font-weight:500; white-space:nowrap; }
+  #composer button#send { background:var(--accent); color:var(--on-accent); }
+  /* 보조 액션은 text button — 주 액션(Invoke)이 먼저 읽히게 한다. */
+  #composer button#stream, #composer button#resume { background:transparent; color:var(--muted); }
+  #composer button#stream:hover:not(:disabled), #composer button#resume:hover:not(:disabled)
+    { background:var(--panel-hi); color:var(--fg); filter:none; }
+  #composer button#stop { background:var(--bad-ctr); color:var(--on-bad-ctr); }
   button:disabled { opacity:.45; cursor:not-allowed; }  /* composer·HITL(.ok/.no) 공통 — 눌린 뒤 비활성 표시 */
   .typing .bubble::after { content:"▋"; animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
