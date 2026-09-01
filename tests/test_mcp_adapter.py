@@ -137,6 +137,52 @@ def test_connect_mcp_expands_env_vars(monkeypatch):
     assert "permission" not in captured["tavily"]  # permission 은 연결설정에서 분리
 
 
+def test_connect_mcp_persistent_session_opens_once(monkeypatch):
+    """session 지원 어댑터면: 서버 세션을 부팅 시 한 번만 열고(호출마다 재기동 금지),
+    도구는 그 세션이 사는 전용 루프에서 실행된다. close() 로 세션·루프가 정리된다."""
+    enters, exits = [], []
+
+    class FakeSession: ...
+
+    class _CM:
+        async def __aenter__(self):
+            enters.append(1)
+            return FakeSession()
+
+        async def __aexit__(self, *a):
+            exits.append(1)
+            return False
+
+    class FakeClient:
+        def __init__(self, connections):
+            self.connections = connections
+
+        def session(self, name):
+            return _CM()
+
+    async def fake_load(session, **kw):
+        assert isinstance(session, FakeSession)  # 세션 바인딩 도구로 로드됨
+        return [_fake_lc("echo")]
+
+    parent = types.ModuleType("langchain_mcp_adapters")
+    client_mod = types.ModuleType("langchain_mcp_adapters.client")
+    client_mod.MultiServerMCPClient = FakeClient
+    tools_mod = types.ModuleType("langchain_mcp_adapters.tools")
+    tools_mod.load_mcp_tools = fake_load
+    monkeypatch.setitem(sys.modules, "langchain_mcp_adapters", parent)
+    monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", client_mod)
+    monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.tools", tools_mod)
+
+    mt = connect_mcp({"servers": {"echo": {"command": "x", "transport": "stdio"}}})
+    try:
+        t = mt.tools("echo")[0]
+        assert t.run(x=1) == "got 1" and t.run(x=2) == "got 2"  # 호출 2번
+        assert enters == [1]  # 세션은 부팅 때 딱 한 번 (호출마다 재기동 아님)
+    finally:
+        mt.close()
+    assert exits == [1]  # close 가 세션을 닫는다
+
+
 def test_dict_args_schema_is_preserved_for_llm_and_skips_klafi_validation():
     """MCP 도구의 args_schema 가 JSON-schema dict 면: KLAFI 검증은 생략하되(호출 불가),
     스키마는 보존해 LLM 바인딩(as_langchain)에 그대로 노출한다(→ 모델이 query 를 만든다)."""

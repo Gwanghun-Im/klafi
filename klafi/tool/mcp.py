@@ -49,17 +49,45 @@ def _sync(coro: Any) -> Any:
         return ex.submit(asyncio.run, coro).result()
 
 
+class _LoopThread:
+    """전용 이벤트루프 스레드 — 영속 MCP 세션이 사는 곳.
+
+    MCP 세션은 자기가 태어난 루프에서만 안전하다. 일회용 루프(_sync)로 돌리면 호출마다 세션을
+    새로 만들어 서버 프로세스 재기동(npx ~1s)을 물게 되므로, 세션의 생성·도구 호출·종료를
+    이 한 루프에 몰아넣고 어느 스레드에서든 run_coroutine_threadsafe 로 넘긴다.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, name="klafi-mcp", daemon=True).start()
+
+    def run(self, coro: Any, timeout: float | None = None) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    def stop(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+
+
 def from_langchain_tool(
-    lc: Any, *, required_permission: str | None = None, policy: Any = None, name: str | None = None
+    lc: Any,
+    *,
+    required_permission: str | None = None,
+    policy: Any = None,
+    name: str | None = None,
+    runner: Any = None,
 ) -> Tool:
     """LangChain 도구(=MCP 도구)를 KLAFI Tool 로 감싼다 → 실행이 Tool.run 경유(governance 적용).
 
     lc.args_schema(pydantic)를 input_schema 로 재사용해 입력 검증도 붙는다. async(ainvoke)는
-    _sync 브리지로 실행한다. required_permission 을 주면 최소권한 검사가 걸린다.
+    runner(기본 _sync 브리지)로 실행한다 — 영속 세션 도구는 세션이 사는 루프의 runner 를 받는다.
+    required_permission 을 주면 최소권한 검사가 걸린다.
     """
+    run = runner or _sync
 
     def _call(**kwargs: Any) -> Any:
-        return _sync(lc.ainvoke(kwargs))
+        return run(lc.ainvoke(kwargs))
 
     # args_schema(원본)를 그대로 보존한다 — LLM 바인딩(as_langchain)이 이걸 LLM 에 노출해야
     # 모델이 올바른 인자(예: query)를 만든다. MCP 는 이게 JSON-schema dict 인 경우가 많은데,
@@ -76,11 +104,19 @@ def from_langchain_tool(
 
 
 class McpTools:
-    """connect_mcp 결과 — 서버별 KLAFI Tool 묶음. 클라이언트 참조를 잡아 세션 수명을 앱과 함께 유지."""
+    """connect_mcp 결과 — 서버별 KLAFI Tool 묶음. 클라이언트·영속 세션을 잡아 앱 수명과 함께 유지."""
 
-    def __init__(self, by_server: dict[str, list[Tool]], client: Any = None) -> None:
+    def __init__(
+        self,
+        by_server: dict[str, list[Tool]],
+        client: Any = None,
+        sessions: dict[str, Any] | None = None,
+        loop: "_LoopThread | None" = None,
+    ) -> None:
         self._by_server = by_server
         self._client = client  # 세션 수명 유지용(GC 방지)
+        self._sessions = sessions or {}  # {server: async CM} — 영속 세션(열린 채 유지)
+        self._loop = loop  # 세션이 사는 전용 루프
 
     def tools(self, server: str) -> list[Tool]:
         return list(self._by_server.get(server, []))
@@ -90,6 +126,18 @@ class McpTools:
 
     def servers(self) -> list[str]:
         return list(self._by_server)
+
+    def close(self) -> None:
+        """영속 세션·루프 정리(테스트·명시적 종료용). 데몬 스레드라 프로세스 종료 시엔 불필요."""
+        if self._loop is None:
+            return
+        for cm in self._sessions.values():
+            try:
+                self._loop.run(cm.__aexit__(None, None, None), timeout=10)
+            except Exception:  # noqa: BLE001 — 종료 실패가 종료를 막지 않는다
+                pass
+        self._sessions.clear()
+        self._loop.stop()
 
 
 def connect_mcp(config: Any) -> McpTools:
@@ -130,11 +178,39 @@ def connect_mcp(config: Any) -> McpTools:
         for name, spec in servers.items()
     }
     client = MultiServerMCPClient(connections)
-    by_server: dict[str, list[Tool]] = {}
-    for name, spec in servers.items():
+
+    def _gov(spec: dict) -> tuple:
         perm = (spec or {}).get("permission")
         timeout = (spec or {}).get("timeout")
-        policy = ExecutionPolicy(timeout=timeout) if timeout is not None else None
+        return perm, ExecutionPolicy(timeout=timeout) if timeout is not None else None
+
+    by_server: dict[str, list[Tool]] = {}
+
+    # ── 영속 세션 경로(기본): 서버 프로세스를 앱 수명 동안 유지 ─────────────
+    # get_tools 는 "툴 호출마다 새 세션"이라 stdio 서버(npx 등)가 호출마다 재기동된다(~1s).
+    # session()+load_mcp_tools(session) 조합이면 세션 바인딩 도구가 되어 재기동이 사라진다.
+    try:
+        from langchain_mcp_adapters.tools import load_mcp_tools
+    except ImportError:
+        load_mcp_tools = None
+    if load_mcp_tools is not None and hasattr(client, "session"):
+        loop = _LoopThread()
+        sessions: dict[str, Any] = {}
+        for name, spec in servers.items():
+            perm, policy = _gov(spec)
+            cm = client.session(name)
+            session = loop.run(cm.__aenter__(), timeout=60)  # 서버 기동+핸드셰이크(부팅 1회)
+            sessions[name] = cm
+            lc_tools = loop.run(load_mcp_tools(session, server_name=name), timeout=60)
+            by_server[name] = [
+                from_langchain_tool(t, required_permission=perm, policy=policy, runner=loop.run)
+                for t in lc_tools
+            ]
+        return McpTools(by_server, client, sessions=sessions, loop=loop)
+
+    # ── 폴백: 구버전 어댑터(session/load_mcp_tools 미지원) → 호출마다 새 세션 ──
+    for name, spec in servers.items():
+        perm, policy = _gov(spec)
         lc_tools = _sync(client.get_tools(server_name=name))  # 서버별로 받아 permission·timeout 부착
         by_server[name] = [
             from_langchain_tool(t, required_permission=perm, policy=policy) for t in lc_tools

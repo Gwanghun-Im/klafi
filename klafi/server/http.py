@@ -201,24 +201,27 @@ def create_app(
     def agent_meta(agent_id: str) -> dict[str, Any]:  # API-08
         return server.metadata(agent_id)
 
+    # async 엔드포인트 + agent.ainvoke — sync 로 두면 요청마다 threadpool(기본 40캡, 숨은 동시성
+    # 상한) + _timeout_sync 스레드가 이중으로 들고, 타임아웃도 명목(스레드는 못 죽여 작업이 백그라
+    # 운드에서 계속)이 된다. async 경로는 asyncio.wait_for 라 타임아웃이 진짜 협조적 취소다.
     @app.post("/agents/{agent_id}/invoke")
-    def invoke(agent_id: str, body: InvokeRequest, request: Request) -> JSONResponse:  # API-01
+    async def invoke(agent_id: str, body: InvokeRequest, request: Request) -> JSONResponse:  # API-01
         agent = server.get(agent_id)
         ctx = _context(request, agent.spec, body.thread_id, auth)
         try:
-            result = agent.invoke(body.input, context=ctx, thread_id=body.thread_id)
+            result = await agent.ainvoke(body.input, context=ctx, thread_id=body.thread_id)
         except Exception as exc:  # noqa: BLE001 — 실패도 execution_id로 Trace 상관관계 확보
             return _fail_response(ctx, exc)  # 가드레일·권한 차단은 4xx, 그 외 500
         return JSONResponse(content=_result_body(ctx, result))
 
     @app.post("/agents/{agent_id}/resume")
-    def resume(agent_id: str, body: ResumeRequest, request: Request) -> JSONResponse:  # API-06
+    async def resume(agent_id: str, body: ResumeRequest, request: Request) -> JSONResponse:  # API-06
         from langgraph.types import Command
 
         agent = server.get(agent_id)
         ctx = _context(request, agent.spec, body.thread_id, auth)
         try:
-            result = agent.invoke(Command(resume=body.decision), context=ctx, thread_id=body.thread_id)
+            result = await agent.ainvoke(Command(resume=body.decision), context=ctx, thread_id=body.thread_id)
         except Exception as exc:  # noqa: BLE001 — invoke와 동일하게 원인별 status
             return _fail_response(ctx, exc)
         return JSONResponse(content=_result_body(ctx, result))
