@@ -196,44 +196,64 @@ def using_gateway(gateway: "ModelGateway | None") -> Any:
 
 
 class ChatModel:
-    """LangChain chat model에 bind_skills를 더한 얇은 래퍼.
+    """LangChain chat model 래퍼 — bind_tools / bind_skills 를 **누적 체이닝**한다.
 
-    나머지 속성(invoke·bind_tools·with_structured_output·stream ...)은 전부 원본에 위임하므로
-    LangChain 모델과 똑같이 쓰면 된다.
+        init_chat_model("main").bind_skills([clock_kst]).bind_tools(search)   # 툴 합집합 + 스킬 지침
+        init_chat_model("main").bind_skills([clock_kst, *search])             # 한 번에 — 동일 결과
+
+    LangChain 원본의 bind_tools 는 덮어쓰기지만 KLAFI 에선 **누적**이다: 체이닝 순서대로 툴은
+    합쳐지고 스킬 지침(prompt)은 이어 붙어 SystemMessage 로 선행 주입된다. 각 bind 는 새 ChatModel 을
+    돌려주며(불변) 즉시 materialize 한다. 그 외 속성(invoke·stream·with_structured_output ...)은
+    바인딩된 runnable 에 위임하므로 LangChain 모델과 똑같이 쓰면 된다.
     """
 
-    def __init__(self, model: Any) -> None:
-        self._model = model
+    def __init__(self, model: Any, *, items: list[Any] | None = None, kwargs: dict | None = None) -> None:
+        self._model = model  # 원본 LangChain chat model
+        self._items = list(items or [])  # 누적된 Tool | Skill | LangChain tool (바인딩 순서 유지)
+        self._kw = dict(kwargs or {})  # bind_tools 추가 인자(tool_choice 등) 누적
+        self._bound = self._materialize()
 
-    def bind_tools(self, tools: list[Any], **kwargs: Any) -> Any:
-        """툴 바인딩 — KLAFI Tool은 LangChain tool로 자동 변환한다.
+    def _materialize(self) -> Any:
+        from klafi.tool.skill import Skill, _with_system
+        from klafi.tool.tool import to_langchain_tools
+
+        if not self._items:
+            return self._model
+        tools, prompts = Skill.flatten(self._items)
+        bound = self._model.bind_tools(to_langchain_tools(tools), **self._kw) if tools else self._model
+        return _with_system(bound, "\n\n".join(prompts)) if prompts else bound
+
+    def _extend(self, items: list[Any], **kwargs: Any) -> "ChatModel":
+        return ChatModel(self._model, items=[*self._items, *items], kwargs={**self._kw, **kwargs})
+
+    def bind_tools(self, tools: list[Any], **kwargs: Any) -> "ChatModel":
+        """툴 바인딩(누적) — KLAFI Tool 은 LangChain tool 로 자동 변환한다.
 
             llm = init_chat_model("main").bind_tools([lookup_order])
         """
         from klafi.tool.skill import Skill
-        from klafi.tool.tool import to_langchain_tools
 
         if any(isinstance(t, Skill) for t in tools):  # 지침이 조용히 버려지는 것을 막는다
             raise ModelException("Skill은 bind_skills()로 바인딩하세요 (bind_tools는 툴 전용)")
-        return self._model.bind_tools(to_langchain_tools(tools), **kwargs)
+        return self._extend(tools, **kwargs)
 
-    def bind_skills(self, skills: list[Any]) -> Any:
-        """Skill(툴 + 지침)을 바인딩 — 툴은 bind_tools로, prompt는 SystemMessage로.
+    def bind_skills(self, skills: list[Any]) -> "ChatModel":
+        """Skill(툴 + 지침) 바인딩(누적) — Tool 이 섞인 리스트도 받는다.
 
             llm = init_chat_model("main").bind_skills([clock_kst])
         """
-        from klafi.tool.skill import bind_skills
-
-        return bind_skills(self, skills)
+        return self._extend(skills)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._model, name)
+        if name.startswith("_"):  # 내부 속성 미설정 시 재귀 방지(copy/pickle 등)
+            raise AttributeError(name)
+        return getattr(self._bound, name)
 
     def __or__(self, other: Any) -> Any:
-        return self._model | other
+        return self._bound | other
 
     def __ror__(self, other: Any) -> Any:
-        return other | self._model
+        return other | self._bound
 
 
 def init_chat_model(alias: str) -> ChatModel:

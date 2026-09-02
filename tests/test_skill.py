@@ -89,6 +89,42 @@ def test_skill_and_plain_tool_mix_without_prompt():
     assert model.seen[0][0].type == "human"  # prompt 없으면 SystemMessage 미주입
 
 
+def test_chaining_accumulates_tools_and_prompts():
+    """KLAFI 체이닝은 누적 — LangChain 원본(덮어쓰기)과 다르다. bind_skills 뒤 bind_tools 해도 스킬이 남는다."""
+    model = _FakeModel()
+    clock = Skill(name="clock", tools=[lookup], prompt="시각이 필요하면 lookup")
+    llm = ChatModel(model).bind_skills([clock]).bind_tools([refund])
+    assert [t.name for t in model.tools] == ["lookup", "refund"]  # 합집합(덮어쓰기 아님)
+    llm.invoke([HumanMessage("hi")])
+    sent = model.seen[0]
+    assert sent[0].type == "system" and "lookup" in sent[0].content  # 스킬 지침 유지
+    assert sent[1].content == "hi"
+
+
+def test_chaining_is_immutable_and_equals_single_call():
+    """각 bind 는 새 ChatModel(불변). 체이닝 결과 = 한 리스트로 한 번에 바인딩한 결과."""
+    s1 = Skill(name="s1", tools=[lookup], prompt="P1")
+    s2 = Skill(name="s2", tools=[refund], prompt="P2")
+
+    m_chain = _FakeModel()
+    a = ChatModel(m_chain).bind_skills([s1])
+    b = a.bind_skills([s2])
+    assert a is not b and len(a._items) == 1 and len(b._items) == 2  # a 는 그대로
+
+    m_single = _FakeModel()
+    single = ChatModel(m_single).bind_skills([s1, s2])
+    b.invoke([HumanMessage("x")]), single.invoke([HumanMessage("x")])
+    assert [t.name for t in m_chain.tools] == [t.name for t in m_single.tools] == ["lookup", "refund"]
+    assert m_chain.seen[0][0].content == m_single.seen[0][0].content == "P1\n\nP2"  # 지침 순서대로 합침
+
+
+def test_bind_tools_still_rejects_skill():
+    from klafi.core.exceptions import ModelException
+
+    with pytest.raises(ModelException):
+        ChatModel(_FakeModel()).bind_tools([Skill(name="s", tools=[lookup])])
+
+
 def test_make_tool_node_flattens_skill():
     """ToolNode에는 Skill을 그대로 넘겨도 툴만 펼쳐 들어간다."""
     node = _graph().make_tool_node([Skill(name="cs", tools=[lookup, refund])])
