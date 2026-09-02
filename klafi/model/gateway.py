@@ -100,6 +100,10 @@ class ModelGateway:
         except KeyError:
             raise ModelNotFoundError(f"model alias '{alias}' 미등록", model=alias) from None
 
+    def has(self, alias: str) -> bool:
+        """alias 등록 여부 — 조립 시점 fail-fast 용 (model() 은 lazy 라 첫 호출까지 오타를 숨긴다)."""
+        return alias in self._entries
+
     def model(self, alias: str) -> Callable[[str], str]:
         """Template/Node에 꽂을 (prompt)->str 콜러블. 호출 시 span+token+cost 기록."""
 

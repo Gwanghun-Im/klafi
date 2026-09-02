@@ -5,6 +5,7 @@ Hook = 전역 관측/정책(Hook 서브클래스). YAML(hooks.yaml)로 배치하
 @klafi_node 미들웨어·가드레일로 붙인다(예: audit → agents/triage_agent.py).
 
   PLATFORM_HOOKS   config 불필요한 공통 훅(metrics · 가드레일 · event). from_config 에 그대로 전달.
+  moderation_hook(gw) LLM 판정 모더레이션(비속어 차단/마스킹·인젝션 탐지) — judge alias 필요.
   context_hook(gw) 히스토리 자동압축 훅. summarizer 가 gateway 요약모델을 필요로 하므로
                    조립(from_config) 이후 bootstrap 에서 gateway 를 주입해 base_hooks 에 더한다.
 """
@@ -12,7 +13,15 @@ Hook = 전역 관측/정책(Hook 서브클래스). YAML(hooks.yaml)로 배치하
 from klafi import ContextHook
 from klafi.core import Hook
 from klafi.events import EventHook
-from klafi.guardrail import GuardrailHook, pii, prompt_injection, warn_only
+from klafi.core.exceptions import ModelNotFoundError
+from klafi.guardrail import (
+    GuardrailHook,
+    injection_llm_guardrail,
+    pii,
+    profanity_guardrail,
+    prompt_injection,
+    warn_only,
+)
 
 from .guardrails import mask_phone, no_secrets
 
@@ -63,6 +72,23 @@ platform_guardrails = GuardrailHook(
 # config 불필요한 공통 훅 — 이 리스트로만 관리한다.
 #   event = 실행 생명주기 이벤트 훅(ExecutionStarted/NodeStarted ... → EventBus)
 PLATFORM_HOOKS = [metrics, platform_guardrails, EventHook()]
+
+
+def moderation_hook(gateway) -> GuardrailHook:
+    """LLM 판정 모더레이션 — 비속어(입력 차단·출력 마스킹) + 인젝션 의미 탐지.
+
+    judge 모델(alias 'judge')이 필요해 context_hook 과 같은 패턴으로 조립 후 주입한다.
+    입력은 차단, 출력은 욕설 부분만 *** 마스킹(LLM 이 치환문 생성 — 리프 전체를 날리지 않는다).
+    주의: 스트리밍(/stream)은 after_agent 미발화라 출력 검사가 빠진다(입력 차단만) — 프레임워크
+    stream TODO 와 동일한 갭. judge alias 는 model.yaml 에서 timeout 3s·재시도 0 으로 등록돼 있다.
+    """
+    if not gateway.has("judge"):  # fail-fast — 오타/미등록이면 가드레일이 조용히 꺼지는 사고 방지
+        raise ModelNotFoundError("moderation_hook: model.yaml 에 'judge' alias 를 등록하세요", model="judge")
+    judge = gateway.model("judge")
+    return GuardrailHook(
+        input=[profanity_guardrail(judge), injection_llm_guardrail(judge)],
+        output=[profanity_guardrail(judge, action="mask")],
+    )
 
 
 def context_hook(gateway) -> ContextHook:

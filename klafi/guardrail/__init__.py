@@ -14,8 +14,18 @@ from .base import (
     prompt_injection,
     warn_only,
 )
+from .llm import (
+    LLMGuardrail,
+    banned_topics_guardrail,
+    injection_llm_guardrail,
+    profanity_guardrail,
+)
 
 __all__ = [
+    "LLMGuardrail",
+    "profanity_guardrail",
+    "injection_llm_guardrail",
+    "banned_topics_guardrail",
     "Guardrail",
     "GuardrailResult",
     "GuardrailHook",

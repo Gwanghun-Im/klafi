@@ -15,3 +15,7 @@ providers:
   expert: # 심층 답변 (운영: 상위 모델로 교체)
     type: anthropic
     model: claude-haiku-4-5-20251001 # ⚠️ 데모라 main/fast 와 '같은' 모델이다.
+  judge: # LLM 가드레일 판정 전용 — 요약(fast)과 계측·정책 분리. 동기 판정이 이벤트 루프를
+    type: anthropic # 점유하므로 타임아웃은 짧게, 재시도 없음(느린 판정 = 전 요청 지연).
+    model: claude-haiku-4-5-20251001
+    policy: { timeout: 3, max_retries: 0 }
