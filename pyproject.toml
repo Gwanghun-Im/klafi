@@ -1,6 +1,6 @@
 [project]
 name = "klafi"
-version = "0.1.3"
+version = "0.1.4"
 description = "KLAFI — Enterprise Agentic AI Engineering Framework"
 requires-python = ">=3.11"
 dependencies = [
