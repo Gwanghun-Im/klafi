@@ -1,6 +1,6 @@
 """KLAFI — Enterprise Agentic AI Engineering Framework."""
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 from klafi.app import KlafiApp
 from klafi.core.base_graph import BaseGraph

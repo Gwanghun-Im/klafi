@@ -3,9 +3,9 @@
 #   pip install -r requirements.txt
 #
 # klafi 는 아직 PyPI에 없으므로 git 설치를 쓴다. 실제 GitHub 주소로 바꾸고,
-# 재현성을 위해 브랜치가 아니라 태그(@v0.1.2 등)를 박아두는 걸 권장한다.
+# 재현성을 위해 브랜치가 아니라 태그(@v0.1.3 등)를 박아두는 걸 권장한다.
 # mcp = Tavily 웹검색(선택). 안 쓰면 빼도 예제는 graceful degrade 로 동작.
-klafi[anthropic,mcp] @ git+https://github.com/<your-org>/klafi.git@v0.1.2
+klafi[anthropic,mcp] @ git+https://github.com/<your-org>/klafi.git@v0.1.3
 
 # klafi 저장소 안에서 개발 중이라면 위 줄을 지우고 이걸 쓴다(수정 즉시 반영):
 #   pip install -e ../..[anthropic,mcp]
