@@ -21,7 +21,7 @@ from klafi.core.graph import KlafiGraph
 from klafi.core.hook import Hook
 from klafi.model import ModelGateway
 from klafi.observability.logging import setup_logging
-from klafi.observability.tracing import setup_tracing
+from klafi.observability.tracing import resolve_otlp_exporter, setup_tracing
 from klafi.registry import AgentRegistry
 from klafi.runtime.factory import ExecutionFactory
 from klafi.runtime.policy import ExecutionPolicy
@@ -111,7 +111,8 @@ class KlafiApp:
 
         # 공통 관측 부트스트랩 — 로깅·트레이싱은 프레임워크가 소유한다(프로젝트 복붙 제거).
         setup_logging()
-        setup_tracing(service_name=cfg.get("service", "klafi"))
+        # OTLP 송출: Intelligence(INTELLIGENCE_MODE=ON) > config observability.otlp > 표준 env > 계측만
+        setup_tracing(exporter=resolve_otlp_exporter(cfg), service_name=cfg.get("service", "klafi"))
 
         from pathlib import Path
 

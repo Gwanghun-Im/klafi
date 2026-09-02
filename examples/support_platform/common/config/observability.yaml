@@ -1,0 +1,13 @@
+# observability.yaml — trace 송출(OTLP) 설정 (공통개발자)
+#
+# 우선순위: Intelligence(INTELLIGENCE_MODE=ON, .env) > 여기 otlp.endpoint > OTEL_* 표준 env > 계측만.
+# 미설정이면 지금처럼 span 은 만들되 어디로도 안 보낸다(계측만). 송출엔 `pip install 'klafi[otlp]'` 필요.
+#
+# endpoint 는 full traces URL(…/v1/traces 포함)이어야 한다 — base URL 이면 404 로 조용히 실패한다.
+# 시크릿은 평문 금지(SEC-05): ${VAR:} 처럼 **기본값 콜론 필수** — 콜론 없이 ${VAR} 만 쓰면
+# 그 환경변수가 없는 장비에서 부팅이 fail-fast 로 죽는다(의도된 동작이나, 예제는 안전하게).
+#
+# otlp:
+#   endpoint: https://tempo.internal:4318/v1/traces
+#   headers:
+#     authorization: Bearer ${TEMPO_TOKEN:}   # 빈 값이면 이 헤더는 자동 제외된다

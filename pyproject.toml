@@ -18,7 +18,15 @@ dependencies = [
 server = ["fastapi>=0.110"]     # 하위호환 alias — fastapi 는 이미 코어라 no-op(기존 klafi[server] 유지)
 openai = ["openai>=1.0", "langchain-openai>=0.2"]
 anthropic = ["anthropic>=0.40", "langchain-anthropic>=0.2"]
-mcp = ["langchain-mcp-adapters>=0.1"]  # MCP 외부 도구 연결 (connect_mcp)
+mcp = ["langchain-mcp-adapters>=0.1"]                    # MCP 외부 도구 연결 (connect_mcp)
+otlp = ["opentelemetry-exporter-otlp-proto-http>=1.20"]  # OTLP trace 송출 (resolve_otlp_exporter)
+
+[dependency-groups]
+dev = [  # uv sync 기본 포함 — venv 재동기화 시 테스트 의존성이 사라지지 않게 명시
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "langgraph-checkpoint-postgres>=2",  # postgres 체크포인터/스토어 경로 테스트
+]
 
 [build-system]
 requires = ["hatchling"]

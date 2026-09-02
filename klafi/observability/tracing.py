@@ -14,6 +14,7 @@ span() 헬퍼로 감싼다. span()은 OTel의 현재 context에 자동 중첩되
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -25,6 +26,7 @@ from klafi.core.context import ExecutionContext
 from klafi.core.hook import Hook, is_control_flow
 
 _TRACER_NAME = "klafi"
+_log = logging.getLogger("klafi.observability")
 
 
 def setup_tracing(
@@ -48,6 +50,128 @@ def setup_tracing(
         proc = SimpleSpanProcessor(exporter) if simple else BatchSpanProcessor(exporter)
         provider.add_span_processor(proc)
     return provider
+
+
+# ── OTLP exporter 결정 (Intelligence 원격 설정 > 로컬 config > 표준 env > 없음) ──
+# 어떤 실패도 부팅을 막지 않는다(§25 fail-open — 관측은 fail-fast 대상이 아니다).
+# 시크릿(헤더 값, URL 의 userinfo·query 토큰)은 어떤 로그에도 남기지 않는다.
+
+_otlp_attached = False  # from_config 재호출(테스트·멀티앱) 시 processor 중복 부착 방지
+
+
+def _safe_url(url: str) -> str:
+    """로그용 URL — userinfo(`pk:sk@`)·query(`?api-key=`) 를 벗겨 시크릿 누출을 막는다."""
+    try:
+        from urllib.parse import urlsplit
+
+        u = urlsplit(url)
+        host = u.netloc.rsplit("@", 1)[-1]  # userinfo 제거, 포트 유지
+        return f"{u.scheme}://{host}{u.path}"
+    except Exception:  # noqa: BLE001
+        return "<url>"
+
+
+def _intelligence_otlp() -> "dict | None":
+    """INTELLIGENCE_MODE=ON 이면 사내 Intelligence 서비스에서 OTLP 설정을 조회. 실패 시 None.
+
+    계약(사내 스펙 확정 시 이 함수만 고치면 된다):
+      GET {INTELLIGENCE_ENDPOINT}{INTELLIGENCE_CONFIG_PATH:-/v1/observability/otlp}
+      → 200 {"endpoint": "<full traces URL(…/v1/traces)>", "headers": {...}?}
+    인증: INTELLIGENCE_TOKEN → Authorization: Bearer. 타임아웃: INTELLIGENCE_TIMEOUT(기본 3s),
+    재시도 없음 — 부팅 경로이고 로컬 폴백이 재시도를 대신한다.
+    """
+    import os
+
+    mode = os.environ.get("INTELLIGENCE_MODE", "").strip().upper()
+    if mode != "ON":
+        if mode and mode != "OFF":  # 'true'/'1' 오타가 조용히 꺼지지 않게
+            _log.warning("INTELLIGENCE_MODE=%r 은 무시됨 — 'ON' 만 활성입니다", mode)
+        return None
+    try:  # URL 조립·Request 생성까지 전부 안에서 — 어떤 실패든 이 함수는 None(로컬 폴백 보장)
+        import json
+        import urllib.request
+
+        base = os.environ.get("INTELLIGENCE_ENDPOINT", "").strip().rstrip("/")
+        if not base:
+            _log.warning("INTELLIGENCE_MODE=ON 이지만 INTELLIGENCE_ENDPOINT 미설정 — 로컬 OTLP 로 폴백")
+            return None
+        url = base + os.environ.get("INTELLIGENCE_CONFIG_PATH", "/v1/observability/otlp")
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        if tok := os.environ.get("INTELLIGENCE_TOKEN"):
+            req.add_header("Authorization", f"Bearer {tok}")
+        try:
+            timeout = float(os.environ.get("INTELLIGENCE_TIMEOUT", "3"))
+        except ValueError:
+            timeout = 3.0
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — 운영자 설정 URL
+            data = json.loads(r.read())
+        return {"endpoint": data["endpoint"], "headers": dict(data.get("headers") or {}), "source": "intelligence"}
+    except Exception as exc:  # noqa: BLE001 — fail-open: 사유는 남기되 값은 안 남긴다
+        _log.warning("Intelligence OTLP 설정 조회 실패(%s) — 로컬 OTLP 로 폴백", type(exc).__name__)
+        return None
+
+
+def _local_otlp(cfg: Any) -> "dict | None":
+    """로컬 설정: config observability.otlp.endpoint > OTel 표준 env(SDK 가 직접 해석)."""
+    import os
+
+    otlp = cfg.get("observability.otlp") if cfg is not None else None
+    if isinstance(otlp, dict) and otlp.get("endpoint"):
+        headers = {k: v for k, v in (otlp.get("headers") or {}).items() if v}  # ${VAR:} 빈 값 drop
+        return {"endpoint": otlp["endpoint"], "headers": headers, "source": "local-config"}
+    if os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        return {"endpoint": None, "headers": None, "source": "otel-env"}  # 무인자 생성 → SDK 표준 처리
+    return None
+
+
+def _make_exporter(conf: dict) -> Any:
+    """conf → OTLPSpanExporter. 미설치·생성 실패는 None(호출부가 다음 소스로 폴백)."""
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    except ImportError:
+        _log.warning(
+            "OTLP 설정(source=%s)이 있으나 exporter 미설치 — pip install 'klafi[otlp]' 후 송출됩니다",
+            conf["source"],
+        )
+        return None
+    try:
+        if conf["endpoint"] is None:  # otel-env: OTEL_EXPORTER_OTLP_* 를 exporter 가 직접 읽는다
+            return OTLPSpanExporter()
+        return OTLPSpanExporter(endpoint=conf["endpoint"], headers=conf["headers"] or None)
+    except Exception as exc:  # noqa: BLE001 — 기형 endpoint 등: 이 소스만 버리고 다음 소스로
+        _log.warning("OTLP exporter 생성 실패(source=%s, %s) — 다음 소스로", conf["source"], type(exc).__name__)
+        return None
+
+
+def resolve_otlp_exporter(cfg: Any = None) -> Any:
+    """trace 송출 대상 결정 — Intelligence(ON) > 로컬 config > 표준 env > 없음(계측만).
+
+    from_config 가 setup_tracing(exporter=...) 에 꽂는다. 프로세스당 1회만 부착(재호출 시 None —
+    BatchSpanProcessor 중복으로 span 이 이중 송출되는 사고 방지). 어떤 실패도 부팅을 막지 않는다.
+    """
+    global _otlp_attached
+    try:
+        if _otlp_attached:
+            _log.info("trace export: OTLP 이미 부착됨 — 건너뜀")
+            return None
+        for conf in (_intelligence_otlp(), _local_otlp(cfg)):
+            if conf is None:
+                continue
+            exporter = _make_exporter(conf)
+            if exporter is not None:
+                _otlp_attached = True
+                _log.info(
+                    "trace export 활성: source=%s endpoint=%s headers=%d개",
+                    conf["source"],
+                    _safe_url(conf["endpoint"]) if conf["endpoint"] else "OTEL_* env",
+                    len(conf["headers"] or {}),
+                )
+                return exporter
+        _log.info("trace export 미설정 — 계측만 수행(span 송출 없음)")
+        return None
+    except Exception as exc:  # noqa: BLE001 — 최종 방어선: 어떤 경우에도 부팅 계속
+        _log.warning("OTLP exporter 구성 실패(%s) — 계측만 수행", type(exc).__name__)
+        return None
 
 
 def _corr(ctx: ExecutionContext | None) -> dict[str, Any]:
