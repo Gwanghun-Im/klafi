@@ -4,10 +4,10 @@ Hook = 전역 관측/정책(Hook 서브클래스). YAML(hooks.yaml)로 배치하
 코드로 선언한다(가드레일과 동일 방침). 특정 에이전트/노드 전용은 공통 훅에 넣지 않고 그 노드에
 @klafi_node 미들웨어·가드레일로 붙인다(예: audit → agents/triage_agent.py).
 
-  PLATFORM_HOOKS   config 불필요한 공통 훅(metrics · 가드레일 · event). from_config 에 그대로 전달.
-  moderation_hook(gw) LLM 판정 모더레이션(비속어 차단/마스킹·인젝션 탐지) — judge alias 필요.
-  context_hook(gw) 히스토리 자동압축 훅. summarizer 가 gateway 요약모델을 필요로 하므로
-                   조립(from_config) 이후 bootstrap 에서 gateway 를 주입해 base_hooks 에 더한다.
+  PLATFORM_HOOKS 가 유일한 배선 지점이다 — 항목은 두 모양 중 하나(통일 계약):
+    · Hook 인스턴스               (gateway 불필요: metrics · 가드레일 · event)
+    · (gateway) -> Hook 팩토리    (gateway 필요: context_hook · moderation_hook)
+  해석은 KlafiApp.from_config 가 한다 — bootstrap 에 append 없음, 여기 리스트만 고치면 된다.
 """
 
 from klafi import ContextHook
@@ -69,9 +69,9 @@ platform_guardrails = GuardrailHook(
     model_output=[warn_only(pii)],
 )
 
-# config 불필요한 공통 훅 — 이 리스트로만 관리한다.
+# ── 플랫폼 공통 훅 배선(유일한 지점) — 인스턴스든 gateway 팩토리든 여기 한 리스트에 ──
 #   event = 실행 생명주기 이벤트 훅(ExecutionStarted/NodeStarted ... → EventBus)
-PLATFORM_HOOKS = [metrics, platform_guardrails, EventHook()]
+#   (리스트 정의는 파일 하단 — 팩토리 함수 선언 뒤)
 
 
 def moderation_hook(gateway) -> GuardrailHook:
@@ -99,3 +99,12 @@ def context_hook(gateway) -> ContextHook:
     보존(감사·재현). (이전 context.yaml 의 값을 코드로 옮긴 것 — 훅은 YAML 로 관리하지 않는다.)
     """
     return ContextHook(max_tokens=400, keep_recent=4, summarizer=gateway.model("fast"))
+
+
+PLATFORM_HOOKS = [
+    metrics,               # 인스턴스 — 실행 지표(스냅샷 공유)
+    platform_guardrails,   # 인스턴스 — 정규식/블록리스트 4스테이지
+    EventHook(),           # 인스턴스 — 생명주기 이벤트
+    context_hook,          # 팩토리 — 히스토리 자동압축(요약모델 필요)
+    moderation_hook,       # 팩토리 — LLM 모더레이션(judge 모델 필요)
+]

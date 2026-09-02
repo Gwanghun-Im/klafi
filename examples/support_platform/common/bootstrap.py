@@ -26,7 +26,7 @@ def _load_env() -> None:
 
 
 # 공통 훅 파일 (코드로 관리 — metrics · 가드레일 · event · context)
-from .hooks import PLATFORM_HOOKS, context_hook, metrics, moderation_hook  # noqa: E402
+from .hooks import PLATFORM_HOOKS, metrics  # noqa: E402
 
 
 def auth(request) -> dict:
@@ -54,10 +54,6 @@ def build_app():
         environment=os.environ.get("KLAFI_ENV"),
         platform_hooks=PLATFORM_HOOKS,
     )
-    # context 훅은 gateway 요약모델이 필요해 조립 후 주입한다(등록되는 전 에이전트에 적용).
-    app.factory.base_hooks.append(context_hook(app.gateway))
-    # LLM 판정 모더레이션 — 비속어(입력 차단·출력 마스킹)·인젝션 의미 탐지 (judge alias 사용)
-    app.factory.base_hooks.append(moderation_hook(app.gateway))
 
     # 업무 Agent 자동 등록 — app/agents/<name>/ 폴더를 훑는다(convention).
     # 업무개발자는 폴더만 떨구면 서비스된다. owner 는 각 agentSpec.py 의 spec.owner 사용.

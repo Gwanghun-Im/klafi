@@ -62,6 +62,27 @@ def test_app_builds_infra_from_config(config_dir):
     assert app.gateway.model("main") is not None
 
 
+def test_platform_hooks_accept_instances_and_gateway_factories(config_dir):
+    """통일 계약: platform_hooks 항목은 Hook 인스턴스 또는 (gateway)->Hook 팩토리 — 한 리스트로 배선."""
+    from klafi.core.exceptions import ConfigSchemaError
+    from klafi.core.hook import Hook
+
+    class H(Hook): ...
+
+    class NeedsGw(Hook):
+        def __init__(self, gw):
+            self.gw = gw
+
+    inst = H()
+    app = KlafiApp.from_config(config_dir, platform_hooks=[inst, lambda gw: NeedsGw(gw)])
+    assert app.base_hooks[0] is inst  # 인스턴스는 그대로
+    assert isinstance(app.base_hooks[1], NeedsGw) and app.base_hooks[1].gw is app.gateway  # 팩토리는 gateway 주입
+    with pytest.raises(ConfigSchemaError):  # 팩토리가 Hook 아닌 걸 반환 → fail-fast
+        KlafiApp.from_config(config_dir, platform_hooks=[lambda gw: "not-a-hook"])
+    with pytest.raises(ConfigSchemaError):  # 훅도 콜러블도 아님 → fail-fast
+        KlafiApp.from_config(config_dir, platform_hooks=[42])
+
+
 def test_agent_gets_injected_model_and_infra(config_dir):
     app = KlafiApp.from_config(config_dir)
     agent = app.create(QAAgent)  # model="main"은 클래스 spec에서

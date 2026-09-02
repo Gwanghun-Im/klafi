@@ -53,6 +53,18 @@ def _build_gateway(model_cfg: dict[str, Any]) -> ModelGateway:
     return gw
 
 
+def _resolve_platform_hook(h: Any, gateway: ModelGateway) -> Hook:
+    """platform_hooks 항목 해석 — Hook 인스턴스는 그대로, 콜러블은 (gateway)->Hook 팩토리로 호출."""
+    if isinstance(h, Hook):
+        return h
+    if callable(h):
+        made = h(gateway)
+        if isinstance(made, Hook):
+            return made
+        raise ConfigSchemaError(f"platform_hooks 팩토리 {getattr(h, '__name__', h)!r} 가 Hook 이 아닌 {type(made).__name__} 을 반환했습니다")
+    raise ConfigSchemaError(f"platform_hooks 항목은 Hook 인스턴스 또는 (gateway)->Hook 팩토리여야 합니다: {h!r}")
+
+
 _CONTEXT_KEYS = {"max_tokens", "keep_recent", "model", "key"}
 
 
@@ -93,7 +105,7 @@ class KlafiApp:
         config_dir: str,
         *,
         environment: str | None = None,
-        platform_hooks: list[Hook] | None = None,
+        platform_hooks: "list[Hook | Any] | None" = None,
     ) -> "KlafiApp":
         cfg = LayeredConfig.from_dir(config_dir, environment=environment)
 
@@ -101,14 +113,16 @@ class KlafiApp:
         setup_logging()
         setup_tracing(service_name=cfg.get("service", "klafi"))
 
-        # 코드 경로(이중관리): 공통개발자가 플랫폼 전역 Hook을 코드로 추가(EventHook, Metrics 등).
-        # 선언 경로: config/hooks.yaml (훅·가드레일). Logging/Tracing은 KlafiGraph 기본 탑재.
-        base_hooks: list[Hook] = list(platform_hooks or [])
         from pathlib import Path
 
         from .hookplan import HookPlan
 
         gateway = _build_gateway(cfg.get("model", {}) or {})
+
+        # 플랫폼 공통 훅 — 통일 계약: 항목은 Hook 인스턴스 **또는** (gateway)->Hook 팩토리.
+        # gateway 가 필요한 훅(ContextHook·LLM 가드레일 등)도 같은 리스트에 팩토리로 넣으면
+        # 여기서 해석된다 — 공통개발자 배선 지점이 hooks.py 리스트 하나로 통일된다.
+        base_hooks: list[Hook] = [_resolve_platform_hook(h, gateway) for h in (platform_hooks or [])]
 
         # context.yaml이 있으면 'context' 훅 등록 (hooks.yaml 검증 전에 해야 함)
         context_cfg = cfg.get("context")
