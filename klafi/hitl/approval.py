@@ -60,6 +60,22 @@ def _audit(event: str, data: dict[str, Any]) -> None:
     _audit_log.info("%s execution_id=%s %s", event, eid, data)
 
 
+def _task_key() -> str | None:
+    """실행 중인 LangGraph 태스크 식별자(thread:ns:task). 그래프 밖이면 None."""
+    try:
+        from langgraph._internal._constants import CONFIG_KEY_TASK_ID  # 비공개 키 — 없으면 graceful
+        from langgraph.config import get_config
+
+        conf = get_config().get("configurable", {})
+        task = conf.get(CONFIG_KEY_TASK_ID)
+        return f"{conf.get('thread_id')}:{conf.get('checkpoint_ns', '')}:{task}" if task else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_announced: dict[str, None] = {}  # approval_id → 이미 요청(감사로그·이벤트·어댑터)을 낸 것. 작은 FIFO
+
+
 def request_approval(
     action: str,
     payload: Any = None,
@@ -71,16 +87,28 @@ def request_approval(
 
     첫 실행에서는 interrupt로 중단되어 caller의 결과에 __interrupt__가 담긴다.
     resume_approval()로 재개하면 이 함수가 ApprovalDecision을 반환하며 Node가 이어진다.
+
+    LangGraph 는 재개 시 노드를 **처음부터 다시 실행**하므로 이 함수도 두 번 돈다. approval_id 를 태스크
+    위치(thread·ns·task)+action+payload 로 결정적으로 만들고, 요청 부수효과(감사로그·이벤트·어댑터 push)는
+    같은 id 로 한 번만 낸다 — 이전엔 재개 때 새 id 로 요청이 2회 나가고 decided 가 두 번째 id 를 가리켰다.
     """
+    key = _task_key()
+    approval_id = (
+        uuid.uuid5(uuid.NAMESPACE_URL, f"klafi-approval:{key}:{action}:{payload!r}").hex if key else uuid.uuid4().hex
+    )
     req = ApprovalRequest(
-        action=action, payload=payload, approver=approver, approver_group=approver_group
+        action=action, payload=payload, approver=approver, approver_group=approver_group, approval_id=approval_id
     )
     from klafi.events import EventType, emit  # lazy
 
-    _audit("approval.requested", asdict(req))
-    emit(EventType.ApprovalRequested, approval_id=req.approval_id, action=action, approver=approver)
-    if _adapter is not None:
-        _adapter(req)  # 전자결재/Portal 등으로 전달
+    if approval_id not in _announced:
+        if len(_announced) >= 1024:
+            _announced.pop(next(iter(_announced)))
+        _announced[approval_id] = None
+        _audit("approval.requested", asdict(req))
+        emit(EventType.ApprovalRequested, approval_id=req.approval_id, action=action, approver=approver)
+        if _adapter is not None:
+            _adapter(req)  # 전자결재/Portal 등으로 전달
 
     raw = interrupt(asdict(req))  # 여기서 중단. 재개 시 Command(resume=...) 값이 raw로 들어온다.
 

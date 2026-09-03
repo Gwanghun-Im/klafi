@@ -215,21 +215,49 @@ class RegexGuardrail:
 
 
 # PII 예: 주민번호/이메일/카드번호 등. 프로젝트에서 확장한다.
-def pii_guardrail(name: str = "pii") -> RegexGuardrail:
-    return RegexGuardrail(
-        patterns=[r"\d{6}-\d{7}", r"\d{16}", r"[\w.]+@[\w.]+\.\w+"],
-        name=name,
-        reason="PII 감지",
-    )
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2 == 1:
+            d = d * 2 - 9 if d * 2 > 9 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+# (라벨, 패턴, 추가 검증). 카드번호는 Luhn 검증 — 주문번호·송장번호 같은 16자리 숫자 오탐을 막는다.
+_PII_CHECKS: tuple[tuple[str, "re.Pattern[str]", Callable[[str], bool] | None], ...] = (
+    ("주민번호", re.compile(r"(?<!\d)\d{6}-\d{7}(?!\d)"), None),
+    ("카드번호", re.compile(r"(?<!\d)\d{16}(?!\d)"), _luhn),
+    ("이메일", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b"), None),
+)
+
+
+def _pii_hit(text: str) -> str | None:
+    for label, rx, validate in _PII_CHECKS:
+        for m in rx.finditer(text):
+            if validate is None or validate(m.group()):
+                return label
+    return None
+
+
+def _pii_check(text: str) -> GuardrailResult:
+    hit = _pii_hit(text)
+    return GuardrailResult(hit is None, f"PII 감지: {hit}" if hit else None)
+
+
+def pii_guardrail(name: str = "pii") -> Guardrail:
+    return guardrail(name=name)(_pii_check)
 
 
 class GuardrailHook(Hook):
     """공통 훅 — 데코레이터를 붙일 수 없는 경계(LLM·Tool)까지 가드레일을 실어 나른다.
 
     관측(로깅·트레이싱)은 훅, 판정·치환은 가드레일(enforce가 실행)이라는 축을 유지한다.
-    agent·model·tool 경계 **모두 반환값이 실제 값을 교체**한다(_transform 으로 발화) — input/
-    model/tool 은 스트리밍에서도, agent output 은 invoke/ainvoke 에서 마스킹된다. (stream 은 최종
-    결과가 없어 after_agent 자체가 발화하지 않으므로 출력 마스킹은 @klafi_node/@klafi_graph 로.)
+    agent·tool 경계는 **반환값이 실제 값을 교체**한다(_transform 으로 발화) — input/tool 은 스트리밍에서도,
+    agent output 은 invoke/ainvoke 에서 마스킹된다. stream 에서는 output 이 종료 시 판정(차단)만 한다 —
+    출력 마스킹은 @klafi_node(after=...) 로(그 노드의 토큰은 after 적용 후 본문으로만 나간다).
+    model/model_output 은 chat model 콜백 경로라 **판정 전용**(치환 불가): 마스킹 가드레일은 등록 시 거부한다.
     """
 
     priority = 1  # 가장 바깥: Input을 다른 Hook보다 먼저 검사
@@ -250,6 +278,17 @@ class GuardrailHook(Hook):
         self._tool_output = tool_output or []  # Tool 반환 경계
         self._model = model or []  # LLM Prompt 경계 (GRD-04/06)
         self._model_output = model_output or []  # LLM 응답 경계
+        # chat model 콜백 경로는 판정 전용(값 교체 불가) — 선언적으로 mask 인 가드레일(LLMGuardrail(action="mask"))
+        # 을 여기 꽂으면 조용히 무시되므로 등록 시점에 거부한다. 함수형 치환 가드레일은 실행 시 경고.
+        for stage, gs in (("model", self._model), ("model_output", self._model_output)):
+            masked = [getattr(g, "name", "?") for g in gs if getattr(g, "action", getattr(g, "_action", None)) == "mask"]
+            if masked:
+                from klafi.core.exceptions import ConfigSchemaError
+
+                raise ConfigSchemaError(
+                    f"GuardrailHook {stage} 스테이지는 판정(차단) 전용입니다 — 마스킹 가드레일 {masked} 은 "
+                    "@klafi_node(after=[...]) 에 붙이세요"
+                )
 
     # Graph(=Agent) before/after — 반환값이 input/result 를 교체한다 (_transform).
     def before_agent(self, input: Any, ctx: ExecutionContext | None) -> Any:
@@ -274,17 +313,12 @@ class GuardrailHook(Hook):
 
 
 # ── klafi prebuilt 가드레일 (코드에서 직접 import) ───────────────────────
-_PII_RES = [re.compile(p) for p in (r"\d{6}-\d{7}", r"\d{16}", r"[\w.]+@[\w.]+\.\w+")]
 _INJECTION_RES = [
     re.compile(p, re.IGNORECASE)
     for p in (r"ignore (the )?(previous|above)", r"system prompt", r"너의 지시(사항)?를 무시")
 ]
 
-
-@guardrail(name="pii")
-def pii(text: str) -> GuardrailResult:
-    hit = next((rx.pattern for rx in _PII_RES if rx.search(text)), None)
-    return GuardrailResult(hit is None, f"PII 감지: {hit}" if hit else None)
+pii = pii_guardrail("pii")
 
 
 @guardrail(name="prompt_injection")

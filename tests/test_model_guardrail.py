@@ -73,7 +73,7 @@ def test_model_retry_via_policy():
     def flaky(p):
         calls.append(1)
         if len(calls) < 3:
-            raise ValueError("model down")
+            raise ConnectionError("model down")  # 일시 장애 — 결정적 오류(ValueError)는 재시도 대상이 아니다
         return "ok"
 
     gw = ModelGateway()

@@ -41,6 +41,15 @@ class Tool:
         required_permission: str | None = None,
         tags: list[str] | None = None,
     ) -> None:
+        import inspect
+
+        if inspect.iscoroutinefunction(fn):
+            # Tool.run 은 sync 라 코루틴 함수를 그대로 감싸면 '<coroutine object>' 문자열이 결과로 나간다.
+            raise ToolException(
+                f"tool '{name or fn.__name__}': async 함수는 @tool 로 감쌀 수 없습니다 — sync 함수로 만들거나 "
+                "(외부 async 도구는) from_langchain_tool(...) 브리지를 쓰세요",
+                tool=name or fn.__name__,
+            )
         self._fn = fn
         self.metadata = ToolMetadata(name or fn.__name__, description or (fn.__doc__ or "").strip(), tags or [])
         self._input_schema = input_schema

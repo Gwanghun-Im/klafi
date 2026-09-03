@@ -15,8 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+import logging
+
 from klafi.core.exceptions import ModelException, ModelNotConfiguredError, ModelNotFoundError
 from klafi.observability.tracing import span
+
+_gw_log = logging.getLogger("klafi.model")
 
 
 @dataclass
@@ -59,7 +63,7 @@ class FunctionProvider:
         text = self._fn(prompt)
         return ModelResult(text, self._count(prompt), self._count(text))
 
-    def chat_model(self, callbacks: Any = None) -> Any:
+    def chat_model(self, callbacks: Any = None, **_: Any) -> Any:
         """init_chat_model(alias) 표준 경로도 지원 — 함수를 LangChain chat model 로 감싼다.
 
         키 없이(echo provider 등) 표준 스타일 에이전트(init_chat_model.bind_tools/bind_skills)를
@@ -112,6 +116,18 @@ class ModelGateway:
 
         return call
 
+    @staticmethod
+    def _chat_overrides(entry: _Entry) -> dict[str, Any]:
+        """alias policy → LangChain chat model 생성 인자. model.yaml 의 policy 가 init_chat_model 경로에서도
+        효력을 갖게 한다(이전엔 (prompt)->str 경로에만 적용되어 무음으로 무시됐다)."""
+        pol = entry.policy
+        if pol is None:
+            return {}
+        out: dict[str, Any] = {"max_retries": pol.max_retries}
+        if pol.timeout is not None:
+            out["timeout"] = pol.timeout
+        return out
+
     def chat_model(self, alias: str) -> Any:
         """bind_tools/with_structured_output 가능한 LangChain chat model.
 
@@ -124,10 +140,32 @@ class ModelGateway:
             return None
         from .callback import KlafiCallbackHandler
 
-        return fn(callbacks=[KlafiCallbackHandler(alias, entry.cost)])
+        callbacks = [KlafiCallbackHandler(alias, entry.cost)]
+        overrides = self._chat_overrides(entry)
+        try:
+            return fn(callbacks=callbacks, **overrides)
+        except TypeError:
+            if not overrides:
+                raise
+            _gw_log.warning("provider '%s' 의 chat_model 이 policy 인자(%s)를 받지 않아 정책 없이 생성", alias, sorted(overrides))
+            return fn(callbacks=callbacks)
 
-    def _invoke(self, alias: str, prompt: str) -> str:
+    def chat_fallbacks(self, alias: str) -> list[Any]:
+        """alias 의 fallback 체인(raw chat model 목록). 순환(a↔b)은 끊는다 — init_chat_model 경로 MOD-08."""
+        out: list[Any] = []
+        seen = {alias}
+        cur = self._entry(alias).fallback
+        while cur and cur not in seen:
+            seen.add(cur)
+            m = self.chat_model(cur)
+            if m is not None:
+                out.append(m)
+            cur = self._entry(cur).fallback
+        return out
+
+    def _invoke(self, alias: str, prompt: str, seen: frozenset = frozenset()) -> str:
         from klafi.core.context import get_context
+        from klafi.core.exceptions import GuardrailException, PolicyException
         from klafi.core.hook import _transform, active_hooks
 
         entry = self._entry(alias)
@@ -139,10 +177,13 @@ class ModelGateway:
             prompt = _transform(hooks, "before_model", prompt, lambda p: (alias, p, ctx))
             try:
                 result = self._apply_policy(lambda: entry.provider(prompt), entry.policy)
+            except (GuardrailException, PolicyException):
+                raise  # 정책·가드레일 차단은 폴백 대상이 아니다(우회 금지)
             except Exception:
-                if entry.fallback:  # MOD-08: 대체 모델로 폴백
-                    sp.set_attribute("klafi.model_fallback", entry.fallback)
-                    return self._invoke(entry.fallback, prompt)
+                nxt = entry.fallback
+                if nxt and nxt not in seen and nxt != alias:  # MOD-08: 대체 모델로 폴백 — 순환(a↔b)은 원 예외
+                    sp.set_attribute("klafi.model_fallback", nxt)
+                    return self._invoke(nxt, prompt, seen | {alias})
                 raise
             sp.set_attribute("klafi.prompt_tokens", result.prompt_tokens)
             sp.set_attribute("klafi.completion_tokens", result.completion_tokens)
@@ -207,24 +248,54 @@ class ChatModel:
     바인딩된 runnable 에 위임하므로 LangChain 모델과 똑같이 쓰면 된다.
     """
 
-    def __init__(self, model: Any, *, items: list[Any] | None = None, kwargs: dict | None = None) -> None:
+    # BaseChatModel/Runnable 파생 메서드 — 프롬프트 주입(RunnableSequence) '안쪽' 모델에 적용해야 한다.
+    # 시퀀스에 위임하면 with_structured_output 은 없고 bind(stop=) 은 앞단 람다로 가서 TypeError 였다.
+    _DERIVE = frozenset(
+        {"with_structured_output", "with_retry", "with_fallbacks", "with_config", "bind", "with_listeners", "with_types"}
+    )
+
+    def __init__(
+        self,
+        model: Any,
+        *,
+        items: list[Any] | None = None,
+        kwargs: dict | None = None,
+        fallbacks: list[Any] | None = None,
+        derive: list[tuple] | None = None,
+    ) -> None:
         self._model = model  # 원본 LangChain chat model
         self._items = list(items or [])  # 누적된 Tool | Skill | LangChain tool (바인딩 순서 유지)
         self._kw = dict(kwargs or {})  # bind_tools 추가 인자(tool_choice 등) 누적
+        self._fallbacks = list(fallbacks or [])  # alias fallback 체인의 raw chat model (MOD-08)
+        self._derive = list(derive or [])  # [(메서드, args, kwargs)] 적용 순서
         self._bound = self._materialize()
 
-    def _materialize(self) -> Any:
+    def _build(self, base: Any) -> Any:
         from klafi.tool.skill import Skill, _with_system
         from klafi.tool.tool import to_langchain_tools
 
-        if not self._items:
-            return self._model
-        tools, prompts = Skill.flatten(self._items)
-        bound = self._model.bind_tools(to_langchain_tools(tools), **self._kw) if tools else self._model
-        return _with_system(bound, "\n\n".join(prompts)) if prompts else bound
+        tools, prompts = Skill.flatten(self._items) if self._items else ([], [])
+        m = base.bind_tools(to_langchain_tools(tools), **self._kw) if tools else base
+        for name, a, k in self._derive:
+            m = getattr(m, name)(*a, **k)
+        return _with_system(m, "\n\n".join(prompts)) if prompts else m
+
+    def _materialize(self) -> Any:
+        primary = self._build(self._model)
+        if self._fallbacks:
+            # 폴백 모델에도 같은 툴·지침·파생을 입힌다. 가드레일 차단은 각 모델의 콜백에서 똑같이 걸리므로 우회되지 않는다.
+            primary = primary.with_fallbacks([self._build(f) for f in self._fallbacks])
+        return primary
+
+    def _clone(self, **changes: Any) -> "ChatModel":
+        base: dict[str, Any] = dict(
+            items=self._items, kwargs=self._kw, fallbacks=self._fallbacks, derive=self._derive
+        )
+        base.update(changes)
+        return ChatModel(self._model, **base)
 
     def _extend(self, items: list[Any], **kwargs: Any) -> "ChatModel":
-        return ChatModel(self._model, items=[*self._items, *items], kwargs={**self._kw, **kwargs})
+        return self._clone(items=[*self._items, *items], kwargs={**self._kw, **kwargs})
 
     def bind_tools(self, tools: list[Any], **kwargs: Any) -> "ChatModel":
         """툴 바인딩(누적) — KLAFI Tool 은 LangChain tool 로 자동 변환한다.
@@ -247,6 +318,8 @@ class ChatModel:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):  # 내부 속성 미설정 시 재귀 방지(copy/pickle 등)
             raise AttributeError(name)
+        if name in self._DERIVE:  # 파생도 누적·불변 — 새 ChatModel 을 돌려준다
+            return lambda *a, **k: self._clone(derive=[*self._derive, (name, a, k)])
         return getattr(self._bound, name)
 
     def __or__(self, other: Any) -> Any:
@@ -277,4 +350,4 @@ def init_chat_model(alias: str) -> ChatModel:
     model = active.chat_model(alias)
     if model is None:
         raise ModelNotConfiguredError(f"alias '{alias}' provider는 chat model을 지원하지 않습니다", model=alias)
-    return ChatModel(model)
+    return ChatModel(model, fallbacks=active.chat_fallbacks(alias))

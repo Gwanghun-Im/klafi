@@ -19,18 +19,14 @@ from .tool import Tool
 
 
 def _expand_env(v: Any) -> Any:
-    """문자열 리프의 ${VAR} 를 os.environ 으로 치환(재귀). 비밀(API 키 등)을 mcp.yaml 평문 대신
-    .env 로 주입하기 위함(SEC-05). 미정의 변수는 빈 문자열."""
-    import os
-    import re
+    """문자열 리프의 ${VAR}/${VAR:default} 치환 — LayeredConfig 와 **같은 구현**(klafi.config.layered.expand_env).
 
-    if isinstance(v, str):
-        return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), v)
-    if isinstance(v, list):
-        return [_expand_env(x) for x in v]
-    if isinstance(v, dict):
-        return {k: _expand_env(x) for k, x in v.items()}
-    return v
+    비밀(API 키 등)을 mcp.yaml 평문 대신 .env 로 주입하기 위함(SEC-05). 미정의 변수에 기본값이 없으면
+    fail-fast(ConfigNotFoundError) — 예전 구현은 빈 문자열로 조용히 통과시켜 키 없는 서버가 떴다.
+    """
+    from klafi.config.layered import expand_env
+
+    return expand_env(v)
 
 
 def _sync(coro: Any) -> Any:
@@ -66,6 +62,37 @@ class _LoopThread:
     def run(self, coro: Any, timeout: float | None = None) -> Any:
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
 
+    def open_session(self, cm: Any, timeout: float | None = None) -> tuple[Any, Any]:
+        """async CM(client.session)을 **한 태스크 안에서** 열고 닫는다 → (session, handle).
+
+        __aenter__/__aexit__ 를 run() 으로 따로 던지면 태스크가 달라져 anyio cancel scope 가
+        "다른 태스크에서 exit" 오류를 낸다. 태스크 하나가 세션을 잡고 stop 신호까지 기다린다.
+        """
+        import concurrent.futures
+
+        ready: concurrent.futures.Future = concurrent.futures.Future()
+
+        async def hold() -> None:
+            stop = asyncio.Event()
+            try:
+                async with cm as session:
+                    ready.set_result((session, stop))
+                    await stop.wait()
+            except BaseException as exc:
+                if not ready.done():
+                    ready.set_exception(exc)
+                    return
+                raise
+
+        fut = asyncio.run_coroutine_threadsafe(hold(), self.loop)
+        session, stop = ready.result(timeout)
+        return session, (fut, stop)
+
+    def close_session(self, handle: Any, timeout: float | None = 10) -> None:
+        fut, stop = handle
+        self.loop.call_soon_threadsafe(stop.set)
+        fut.result(timeout)  # 같은 태스크에서 __aexit__ 완료
+
     def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
 
@@ -85,9 +112,24 @@ def from_langchain_tool(
     required_permission 을 주면 최소권한 검사가 걸린다.
     """
     run = runner or _sync
+    tool_name = name or getattr(lc, "name", None) or "mcp_tool"
 
     def _call(**kwargs: Any) -> Any:
-        return run(lc.ainvoke(kwargs))
+        import uuid
+
+        from langchain_core.tools import BaseTool
+
+        from klafi.core.exceptions import ToolException
+
+        if not isinstance(lc, BaseTool):  # 덕타이핑 러너블(테스트 페이크 등) — kwargs 그대로
+            return run(lc.ainvoke(kwargs))
+        # kwargs 로 부르면 BaseTool 이 status·artifact 를 버린 bare content 만 돌려준다(tool_call_id 없음)
+        # → MCP isError 가 성공으로 둔갑. ToolCall 로 불러 ToolMessage 를 받고 status 를 KLAFI 예외로 올린다.
+        call = {"type": "tool_call", "name": lc.name, "args": kwargs, "id": f"klafi-{uuid.uuid4().hex[:12]}"}
+        msg = run(lc.ainvoke(call))
+        if getattr(msg, "status", None) == "error":
+            raise ToolException(f"tool '{tool_name}' 실패: {_text(getattr(msg, 'content', msg))}", tool=tool_name)
+        return getattr(msg, "content", msg)
 
     # args_schema(원본)를 그대로 보존한다 — LLM 바인딩(as_langchain)이 이걸 LLM 에 노출해야
     # 모델이 올바른 인자(예: query)를 만든다. MCP 는 이게 JSON-schema dict 인 경우가 많은데,
@@ -95,12 +137,20 @@ def from_langchain_tool(
     # 권한·audit·가드레일·policy 는 그대로 적용.
     return Tool(
         _call,
-        name=name or getattr(lc, "name", None) or "mcp_tool",
+        name=tool_name,
         description=getattr(lc, "description", "") or "",
         input_schema=getattr(lc, "args_schema", None),
         required_permission=required_permission,
         policy=policy,
     )
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+    return str(content)
 
 
 class McpTools:
@@ -131,11 +181,13 @@ class McpTools:
         """영속 세션·루프 정리(테스트·명시적 종료용). 데몬 스레드라 프로세스 종료 시엔 불필요."""
         if self._loop is None:
             return
-        for cm in self._sessions.values():
+        import logging
+
+        for name, handle in self._sessions.items():
             try:
-                self._loop.run(cm.__aexit__(None, None, None), timeout=10)
-            except Exception:  # noqa: BLE001 — 종료 실패가 종료를 막지 않는다
-                pass
+                self._loop.close_session(handle, timeout=10)
+            except Exception as exc:  # noqa: BLE001 — 종료 실패가 종료를 막지 않지만 삼키지도 않는다
+                logging.getLogger("klafi.tool").warning("mcp.close server=%s 실패: %s", name, exc)
         self._sessions.clear()
         self._loop.stop()
 
@@ -198,9 +250,8 @@ def connect_mcp(config: Any) -> McpTools:
         sessions: dict[str, Any] = {}
         for name, spec in servers.items():
             perm, policy = _gov(spec)
-            cm = client.session(name)
-            session = loop.run(cm.__aenter__(), timeout=60)  # 서버 기동+핸드셰이크(부팅 1회)
-            sessions[name] = cm
+            # 서버 기동+핸드셰이크(부팅 1회). enter/exit 를 같은 태스크가 담당한다(anyio cancel scope).
+            session, sessions[name] = loop.open_session(client.session(name), timeout=60)
             lc_tools = loop.run(load_mcp_tools(session, server_name=name), timeout=60)
             by_server[name] = [
                 from_langchain_tool(t, required_permission=perm, policy=policy, runner=loop.run)

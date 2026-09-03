@@ -7,10 +7,18 @@ Config Framework(§22) 도입 시 계층 병합으로 확장한다.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, fields
 from typing import Any
 
 from klafi.core.exceptions import GuardrailException, PolicyException
+
+# 결정적 실패(코드 버그·잘못된 입력)는 재시도해도 같은 결과 — LangGraph default_retry_on 과 같은 목록.
+# ConnectionError 는 OSError 하위지만 일시 장애라 should_retry 에서 먼저 재시도로 판정한다.
+_DETERMINISTIC: tuple[type[BaseException], ...] = (
+    ValueError, TypeError, ArithmeticError, ImportError, LookupError, NameError, SyntaxError,
+    RuntimeError, ReferenceError, StopIteration, StopAsyncIteration, OSError,
+)
 
 
 @dataclass
@@ -21,9 +29,10 @@ class ExecutionPolicy:
     backoff_base: float = 0.5  # POL-03 (초)
     backoff_factor: float = 2.0
     backoff_max: float = 30.0
+    jitter: bool = True  # 동시 재시도 폭주(thundering herd) 완화 — 지연에 0~min(지연,1s) 무작위 가산
     # 결정적 실패는 재시도해도 같은 결과이므로 기본 제외.
     retry_on: tuple[type[BaseException], ...] = (Exception,)
-    no_retry_on: tuple[type[BaseException], ...] = (GuardrailException, PolicyException)
+    no_retry_on: tuple[type[BaseException], ...] = (GuardrailException, PolicyException, *_DETERMINISTIC)
 
     @classmethod
     def from_config(cls, data: "ExecutionPolicy | dict | None") -> "ExecutionPolicy | None":
@@ -61,11 +70,14 @@ class ExecutionPolicy:
         return replace(self, **overrides)
 
     def backoff_delay(self, attempt: int) -> float:
-        return min(self.backoff_base * (self.backoff_factor**attempt), self.backoff_max)
+        delay = min(self.backoff_base * (self.backoff_factor**attempt), self.backoff_max)
+        return delay + random.uniform(0, min(delay, 1.0)) if self.jitter else delay
 
     def should_retry(self, exc: BaseException, attempt: int) -> bool:
         if attempt >= self.max_retries:
             return False
+        if isinstance(exc, ConnectionError):  # 일시 장애 — OSError 하위지만 재시도 대상
+            return True
         if isinstance(exc, self.no_retry_on):
             return False
         return isinstance(exc, self.retry_on)

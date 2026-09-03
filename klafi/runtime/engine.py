@@ -32,7 +32,11 @@ def _timeout_sync(fn: Callable[[], Any], timeout: float | None) -> Any:
     try:
         return fut.result(timeout=timeout)
     except FutureTimeout:
-        raise TimeoutException(f"실행이 timeout {timeout}s를 초과", timeout=timeout) from None
+        raise TimeoutException(
+            f"실행이 timeout {timeout}s를 초과 (동기 경로: 대기만 해제되고 작업 스레드는 끝까지 실행됨 — "
+            "취소가 필요하면 ainvoke/astream 경로)",
+            timeout=timeout,
+        ) from None
     finally:
         # ponytail: 초과한 worker thread는 강제 종료 불가 → 백그라운드로 흘려보냄.
         #           협조적 취소가 필요하면 async(ainvoke) 경로를 쓴다.
@@ -50,6 +54,11 @@ def run_sync(fn: Callable[[], Any], policy: ExecutionPolicy, set_state: SetState
         except Exception as exc:  # noqa: BLE001
             if is_control_flow(exc):  # interrupt(HITL): 재시도 금지, 승인 대기
                 set_state(ExecutionState.WAITING_APPROVAL)
+                raise
+            if isinstance(exc, TimeoutException):
+                # 동기 timeout 은 취소가 아니라 대기 해제 — 1회차 스레드가 아직 같은 ctx 위에서 돌고 있으므로
+                # 재시도하면 두 attempt 가 동시에 실행된다. 동기 경로에서는 timeout 을 재시도하지 않는다.
+                set_state(ExecutionState.TIMEOUT)
                 raise
             if policy.should_retry(exc, attempt):
                 time.sleep(policy.backoff_delay(attempt))

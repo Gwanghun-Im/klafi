@@ -28,6 +28,7 @@ class ExecutionContext:
     user_id: str | None = None
     tenant_id: str | None = None
     session_id: str | None = None
+    thread_id: str | None = None  # 이번 실행이 실제로 쓴 LangGraph thread_id (BaseGraph._config 가 채움)
     request_id: str | None = None
     security_context: dict[str, Any] = field(default_factory=dict)
     runtime_config: dict[str, Any] = field(default_factory=dict)

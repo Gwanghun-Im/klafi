@@ -11,7 +11,8 @@ Config 예:
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import asyncio
+from typing import Any, AsyncIterator, Callable
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
@@ -19,6 +20,65 @@ from klafi.core.exceptions import CheckpointException
 
 # MEM-01: 별도 인터페이스를 만들지 않고 LangGraph 표준을 채택한다.
 CheckpointerSPI = BaseCheckpointSaver
+
+
+class SyncSaverAsyncAdapter(BaseCheckpointSaver):
+    """동기 전용 saver(PostgresSaver 등)에 async 메서드를 입힌다.
+
+    HTTP 서버는 ainvoke/astream 만 호출하는데 동기 saver 의 aget_tuple/aput 은 NotImplementedError 라
+    `checkpoint: postgres` 설정이 서버에서 모든 요청을 실패시켰다. 동기 메서드는 그대로 위임하고 async 는
+    스레드로 돌린다(psycopg 동기 풀은 스레드 안전).
+    """
+
+    def __init__(self, inner: BaseCheckpointSaver) -> None:
+        super().__init__(serde=inner.serde)
+        self.inner = inner
+
+    # ── 동기: 위임 ──
+    def get_tuple(self, config: Any) -> Any:
+        return self.inner.get_tuple(config)
+
+    def list(self, config: Any, *, filter: Any = None, before: Any = None, limit: Any = None) -> Any:
+        return self.inner.list(config, filter=filter, before=before, limit=limit)
+
+    def put(self, config: Any, checkpoint: Any, metadata: Any, new_versions: Any) -> Any:
+        return self.inner.put(config, checkpoint, metadata, new_versions)
+
+    def put_writes(self, config: Any, writes: Any, task_id: str, task_path: str = "") -> None:
+        return self.inner.put_writes(config, writes, task_id, task_path)
+
+    def delete_thread(self, thread_id: str) -> None:
+        return self.inner.delete_thread(thread_id)
+
+    def get_next_version(self, current: Any, channel: Any = None) -> Any:
+        return self.inner.get_next_version(current, channel)
+
+    # ── 비동기: 스레드 ──
+    async def aget_tuple(self, config: Any) -> Any:
+        return await asyncio.to_thread(self.inner.get_tuple, config)
+
+    async def alist(self, config: Any, *, filter: Any = None, before: Any = None, limit: Any = None) -> AsyncIterator[Any]:
+        items = await asyncio.to_thread(
+            lambda: list(self.inner.list(config, filter=filter, before=before, limit=limit))
+        )
+        for item in items:
+            yield item
+
+    async def aput(self, config: Any, checkpoint: Any, metadata: Any, new_versions: Any) -> Any:
+        return await asyncio.to_thread(self.inner.put, config, checkpoint, metadata, new_versions)
+
+    async def aput_writes(self, config: Any, writes: Any, task_id: str, task_path: str = "") -> None:
+        return await asyncio.to_thread(self.inner.put_writes, config, writes, task_id, task_path)
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        return await asyncio.to_thread(self.inner.delete_thread, thread_id)
+
+
+def _async_capable(saver: BaseCheckpointSaver) -> BaseCheckpointSaver:
+    """async 메서드가 기본(NotImplementedError)인 saver 는 어댑터로 감싼다."""
+    if type(saver).aget_tuple is BaseCheckpointSaver.aget_tuple:
+        return SyncSaverAsyncAdapter(saver)
+    return saver
 
 CheckpointerFactory = Callable[[dict[str, Any]], BaseCheckpointSaver]
 _REGISTRY: dict[str, CheckpointerFactory] = {}
@@ -93,8 +153,10 @@ for _name in ("postgres", "postgresql"):
 
 def resolve_checkpointer(config: Any) -> BaseCheckpointSaver | None:
     """None → None, Saver 인스턴스 → 그대로, name/dict → Registry로 생성."""
-    if config is None or isinstance(config, BaseCheckpointSaver):
-        return config
+    if config is None:
+        return None
+    if isinstance(config, BaseCheckpointSaver):
+        return _async_capable(config)
     if isinstance(config, str):
         name, cfg = config, {}
     elif isinstance(config, dict):
@@ -104,4 +166,4 @@ def resolve_checkpointer(config: Any) -> BaseCheckpointSaver | None:
     factory = _REGISTRY.get(str(name).lower())
     if factory is None:
         raise CheckpointException(f"알 수 없는 checkpointer type: {name!r}")
-    return factory(cfg)
+    return _async_capable(factory(cfg))

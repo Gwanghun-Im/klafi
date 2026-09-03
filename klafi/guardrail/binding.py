@@ -25,6 +25,24 @@ def _is_message(v: Any) -> bool:
     return hasattr(v, "content") and hasattr(v, "model_copy")
 
 
+def _is_model(v: Any) -> bool:
+    # pydantic BaseModel(툴의 구조화 출력 등) — dict 로 펼쳐 순회하고 같은 타입으로 재조립한다
+    return hasattr(v, "model_dump") and hasattr(v, "model_validate")
+
+
+def _role(m: Any) -> Any:
+    return m.get("role") if isinstance(m, dict) else getattr(m, "type", None)
+
+
+def _tail_start(msgs: list) -> int:
+    """검사 대상 꼬리의 시작 인덱스. 기본은 마지막 메시지 하나지만, 병렬 툴콜은 한 스텝에 ToolMessage
+    여러 개를 붙이므로 마지막이 tool 이면 연속한 tool 메시지 전부를 포함한다."""
+    i = len(msgs) - 1
+    while i > 0 and _role(msgs[i]) == "tool" and _role(msgs[i - 1]) == "tool":
+        i -= 1
+    return i
+
+
 def _opaque(v: Any, fn: Leaf) -> Any:
     """매핑 불가 리프(pydantic 툴 출력·커스텀 객체 등). 검사는 하되 치환은 막는다.
 
@@ -48,11 +66,11 @@ def bind(v: Any, fn: Leaf) -> Any:
         out = {}
         for k, x in v.items():
             if k == "messages" and isinstance(x, list) and x:
-                # ponytail: messages는 마지막 것만 본다. 방금 들어온/만들어진 내용이 항상
-                # 마지막이고, 앞의 것은 마지막이었을 때 이미 검사됐다. 이력 전체를 스캔해야
-                # 하면 이 슬라이스만 넓힌다.
-                nl = bind(x[-1], fn)  # 마지막이 안 바뀌면 리스트도 원본 그대로(불변 계약 유지)
-                out[k] = x if nl is x[-1] else [*x[:-1], nl]
+                # ponytail: messages는 방금 들어온/만들어진 꼬리만 본다 — 앞의 것은 마지막이었을 때
+                # 이미 검사됐다. 꼬리 = 마지막 메시지, 단 병렬 툴콜의 연속 ToolMessage 는 전부.
+                i = _tail_start(x)
+                tail = [bind(m, fn) for m in x[i:]]
+                out[k] = x if all(a is b for a, b in zip(tail, x[i:])) else [*x[:i], *tail]
             else:
                 out[k] = bind(x, fn)
         return out if any(out[k] is not v[k] for k in v) else v
@@ -62,6 +80,10 @@ def bind(v: Any, fn: Leaf) -> Any:
     if _is_message(v):
         c = bind(v.content, fn)  # content 하나만 — id·name·type은 건드리지 않는다
         return v.model_copy(update={"content": c}) if c is not v.content else v
+    if _is_model(v):
+        data = v.model_dump()
+        new = bind(data, fn)
+        return v if new is data else type(v).model_validate(new)
     if v is None or isinstance(v, (int, float, bool)):
         return v  # 텍스트 리프 아님 — 건너뜀
     return _opaque(v, fn)

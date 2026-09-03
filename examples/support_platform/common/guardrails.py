@@ -13,7 +13,15 @@ import re
 
 from klafi.guardrail import GuardrailResult, guardrail
 
-_PHONE = re.compile(r"01[016-9]-?\d{3,4}-?\d{4}")
+# 국내 전화번호 전부: 휴대폰(01x)·서울(02)·지역(03x~06x)·인터넷(070)·수신자부담(080)·안심(050x)·대표(15xx~19xx).
+# 휴대폰만 잡으면 "070-4168-2900 (또는 02-523-7029)" 같은 유선번호가 그대로 새어 나간다.
+_PHONE = re.compile(
+    r"(?<!\d)(?:(01[016-9]|02|0[3-6]\d|070|080|050\d)[-.]?\d{3,4}[-.]?\d{4}|(1[5-9]\d{2})[-.]?\d{4})(?!\d)"
+)
+
+
+def _mask(m: re.Match) -> str:  # 국번은 남기고 나머지만 가린다: 02-523-7029 → 02-****-****
+    return f"{m.group(1)}-****-****" if m.group(1) else f"{m.group(2)}-****"
 
 
 @guardrail
@@ -29,7 +37,7 @@ def refund_policy(text: str) -> GuardrailResult:
 
 @guardrail
 def mask_phone(text: str) -> GuardrailResult:
-    """휴대폰 번호는 막지 않고 가린다 — replacement 를 주면 차단 대신 치환된다.
+    """전화번호는 막지 않고 가린다 — replacement 를 주면 차단 대신 치환된다.
 
     순수 문자열 정책이다. 값의 모양(state dict, 메시지 객체, tool kwargs, LLM str)은 바인딩이
     처리하므로, 이 하나가 노드·그래프·tool·gateway 경계 어디에나 그대로 꽂힌다. 메시지 id 유지·
@@ -37,4 +45,4 @@ def mask_phone(text: str) -> GuardrailResult:
     """
     if not _PHONE.search(text):
         return GuardrailResult(True)
-    return GuardrailResult(False, "휴대폰 번호 마스킹", replacement=_PHONE.sub("010-****-****", text))
+    return GuardrailResult(False, "전화번호 마스킹", replacement=_PHONE.sub(_mask, text))

@@ -24,6 +24,10 @@ def is_control_flow(exc: BaseException) -> bool:
 
     이런 예외는 error Hook을 발화하지 않고(그냥 통과), retry 대상도 아니다.
     """
+    import asyncio
+
+    if isinstance(exc, asyncio.CancelledError):  # 클라이언트 끊김·협조적 타임아웃 취소 — 오류 아님
+        return True
     try:
         from langgraph.errors import GraphBubbleUp
     except ImportError:  # pragma: no cover
@@ -156,42 +160,51 @@ def _transform(
 
 
 # ── Node 래핑 ──────────────────────────────────────────────────────────
+def run_hooked(node: str, get_hooks: Callable[[], list[Hook]], state: Any, call: Callable[[], Any]) -> Any:
+    """call() 을 노드 훅(before/after/error/finally)으로 감싸 실행한다."""
+    hooks = get_hooks()
+    ctx = get_context()
+    _before(hooks, "before_node", node, state, ctx)
+    try:
+        result = call()
+        _after(hooks, "after_node", node, state, result, ctx)
+        return result
+    except BaseException as exc:
+        if not is_control_flow(exc):  # interrupt·취소는 실패가 아님 → error Hook 제외
+            _error(hooks, "on_node_error", node, state, exc, ctx)
+        raise
+    finally:
+        _finally(hooks, "finally_node", node, state, ctx)
+
+
+async def arun_hooked(node: str, get_hooks: Callable[[], list[Hook]], state: Any, call: Callable[[], Any]) -> Any:
+    hooks = get_hooks()
+    ctx = get_context()
+    _before(hooks, "before_node", node, state, ctx)
+    try:
+        result = await call()
+        _after(hooks, "after_node", node, state, result, ctx)
+        return result
+    except BaseException as exc:
+        if not is_control_flow(exc):
+            _error(hooks, "on_node_error", node, state, exc, ctx)
+        raise
+    finally:
+        _finally(hooks, "finally_node", node, state, ctx)
+
+
 def wrap_node(fn: Callable[..., Any], node: str, get_hooks: Callable[[], list[Hook]], is_async: bool) -> Callable[..., Any]:
     """Node 함수를 Hook 발화로 감싼다. get_hooks는 호출 시점에 최신 목록을 반환."""
 
     if is_async:
         @functools.wraps(fn)
         async def awrapped(state: Any, *a: Any, **kw: Any) -> Any:
-            hooks = get_hooks()
-            ctx = get_context()
-            _before(hooks, "before_node", node, state, ctx)
-            try:
-                result = await fn(state, *a, **kw)
-                _after(hooks, "after_node", node, state, result, ctx)
-                return result
-            except BaseException as exc:
-                if not is_control_flow(exc):  # interrupt는 실패가 아님 → error Hook 제외
-                    _error(hooks, "on_node_error", node, state, exc, ctx)
-                raise
-            finally:
-                _finally(hooks, "finally_node", node, state, ctx)
+            return await arun_hooked(node, get_hooks, state, lambda: fn(state, *a, **kw))
 
         return awrapped
 
     @functools.wraps(fn)
     def wrapped(state: Any, *a: Any, **kw: Any) -> Any:
-        hooks = get_hooks()
-        ctx = get_context()
-        _before(hooks, "before_node", node, state, ctx)
-        try:
-            result = fn(state, *a, **kw)
-            _after(hooks, "after_node", node, state, result, ctx)
-            return result
-        except BaseException as exc:
-            if not is_control_flow(exc):  # interrupt는 실패가 아님 → error Hook 제외
-                _error(hooks, "on_node_error", node, state, exc, ctx)
-            raise
-        finally:
-            _finally(hooks, "finally_node", node, state, ctx)
+        return run_hooked(node, get_hooks, state, lambda: fn(state, *a, **kw))
 
     return wrapped

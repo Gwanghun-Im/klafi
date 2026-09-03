@@ -100,7 +100,7 @@ def test_tool_retry():
     def flaky() -> str:
         calls.append(1)
         if len(calls) < 2:
-            raise ValueError("transient")
+            raise ConnectionError("transient")
         return "ok"
 
     assert flaky() == "ok" and len(calls) == 2

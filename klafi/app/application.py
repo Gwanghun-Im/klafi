@@ -27,7 +27,7 @@ from klafi.runtime.factory import ExecutionFactory
 from klafi.runtime.policy import ExecutionPolicy
 
 
-_PROVIDER_KEYS = {"type", "model", "cost", "fallback", "policy"}
+_PROVIDER_KEYS = {"type", "model", "cost", "fallback", "policy", "params"}  # params: 모델 생성 인자(temperature 등)
 
 
 def _build_gateway(model_cfg: dict[str, Any]) -> ModelGateway:

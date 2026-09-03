@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KLAFI Chat</title>
+<title>KLAFI Playground</title>
 <style>
   /* Material Design 3 다크 baseline 토큰 — 컴포넌트 라이브러리 없이 CSS 만으로 MD3 look.
      (오프라인/사내망 안전: 외부 CDN·폰트 로드 없음. Roboto 는 설치돼 있으면 집는다.) */
@@ -88,8 +88,8 @@
   #composer button { padding:10px 18px; font-weight:500; white-space:nowrap; }
   #composer button#send { background:var(--accent); color:var(--on-accent); }
   /* 보조 액션은 text button — 주 액션(Invoke)이 먼저 읽히게 한다. */
-  #composer button#stream, #composer button#resume { background:transparent; color:var(--muted); }
-  #composer button#stream:hover:not(:disabled), #composer button#resume:hover:not(:disabled)
+  #composer button#stream { background:transparent; color:var(--muted); }
+  #composer button#stream:hover:not(:disabled)
     { background:var(--panel-hi); color:var(--fg); filter:none; }
   #composer button#stop { background:var(--bad-ctr); color:var(--on-bad-ctr); }
   button:disabled { opacity:.45; cursor:not-allowed; }  /* composer·HITL(.ok/.no) 공통 — 눌린 뒤 비활성 표시 */
@@ -100,7 +100,7 @@
 <body>
 <header>
   <span class="dot" id="dot"></span>
-  <b>KLAFI Chat</b>
+  <b>KLAFI Playground</b>
   <select id="agent" title="에이전트"></select>
   <span class="muted" id="hint"></span>
   <span class="sp"></span>
@@ -115,7 +115,6 @@
   <textarea id="text" rows="1" placeholder="메시지를 입력하세요…"></textarea>
   <button type="submit" id="send" title="Invoke — 한 번에 응답">Invoke</button>
   <button type="button" id="stream" title="Stream — NDJSON 청크 스트리밍">Stream</button>
-  <button type="button" id="resume" title="Resume — 중단된 스레드 재개(텍스트=사유, 비우면 승인)">Resume</button>
   <button type="button" id="stop" title="진행 중인 스트림 중지" hidden>중지</button>
 </form>
 
@@ -126,15 +125,20 @@ const log = $("#log");
 // 세션(대화)은 thread_id로 갈린다. 유저별로 독립 세션이 되도록 thread를 유저에 묶고,
 // 에이전트도 포함한다 — 체크포인터는 thread_id만으로 키를 잡으므로, 스키마가 다른 그래프가
 // 같은 thread를 공유하면 서로의 상태를 덮어써 대기 중인 승인(interrupt)이 소실된다.
-let threadBase = "t-" + rnd();
+// thread 는 탭 세션에 남긴다 — 새로고침해도 같은 대화(대기 중 승인 포함)로 돌아온다.
+const remember = k => { try { return sessionStorage.getItem(k); } catch { return null; } };
+const keep = (k, v) => { try { sessionStorage.setItem(k, v); } catch {} };
+let threadBase = remember("klafi.thread") || ("t-" + rnd()); keep("klafi.thread", threadBase);
 const userId = () => $("#xuser").value.trim() || "anon";
 const thread = () => `${userId()}:${$("#agent").value}:${threadBase}`;
+// 스트림 모드 — custom 은 노드가 get_stream_writer() 로 보내는 진행 신호(⏳ 로 표시)
+const STREAM_MODES = ["updates", "messages", "custom"];
 
 // 동시 요청 방지 — 서버 concurrency 상한(429)과 말풍선 뒤섞임을 막는다. 스트림은 중지 가능.
 let busy = false, aborter = null;
 function setBusy(on, abortable = false) {
   busy = on;
-  ["#send", "#stream", "#resume"].forEach(s => { $(s).disabled = on; });
+  ["#send", "#stream"].forEach(s => { $(s).disabled = on; });
   $("#stop").hidden = !(on && abortable);
 }
 
@@ -249,15 +253,17 @@ function renderApproval(agentId, pend, streaming) {
     if (busy) return;                        // 다른 요청 진행 중이면 승인 클릭 무시(중복 재개 방지)
     b.querySelectorAll("button, input").forEach(x => x.disabled = true);  // 한 번만 결정 가능(버튼·사유입력 잠금)
     const decision = {approved, comment: comment.value || null, decided_by: $("#xuser").value || "trader"};
+    // interrupt id 가 있으면 id-키 resume — 병렬 브랜치로 승인 요청이 여럿이어도 정확히 이 카드의 것만 재개된다.
+    const resume = pend && pend.id ? {[pend.id]: decision} : decision;
     b.insertAdjacentHTML("beforeend", `<div class="done">→ ${approved ? "승인" : "반려"}됨</div>`);
     if (streaming) {
-      await streamRequest(agentId, `/agents/${agentId}/resume/stream`, {thread_id: tid, decision});
+      await streamRequest(agentId, `/agents/${agentId}/resume/stream`, {thread_id: tid, decision: resume, stream_mode: STREAM_MODES});
     } else {
       setBusy(true);
       // 승인 후 재개는 검색·보고서로 수십 초 걸릴 수 있다 — 무반응처럼 보이지 않게 작성중 표시.
       const typing = bubble("bot", agentId, ""); typing.classList.add("typing");
       try {
-        const r = await api(`/agents/${agentId}/resume`, {method:"POST", body: JSON.stringify({thread_id: tid, decision})});
+        const r = await api(`/agents/${agentId}/resume`, {method:"POST", body: JSON.stringify({thread_id: tid, decision: resume})});
         renderResponse(agentId, r);
       } finally { typing.remove(); setBusy(false); }
     }
@@ -308,7 +314,7 @@ async function stream() {
   if (!text && agentId !== "stock") return;
   const input = buildInput(agentId, text); if (!input) return;
   bubble("user", "나", esc(text)); clearText();
-  await streamRequest(agentId, `/agents/${agentId}/stream`, {input, thread_id: thread()});
+  await streamRequest(agentId, `/agents/${agentId}/stream`, {input, thread_id: thread(), stream_mode: STREAM_MODES});
 }
 
 // 공통 스트리밍 렌더 — /stream 과 /resume/stream 이 공유. NDJSON(token/chunk/error)을 파싱해 실시간 갱신.
@@ -357,6 +363,18 @@ async function streamRequest(agentId, url, payload) {
       return;
     }
     if (typeof obj.token === "string") { gotToken = true; txt.textContent += obj.token; return; }  // LLM 토큰 델타
+    if (obj.structured) {                             // output 계약 노드의 구조화 결과 — 라벨:값 카드로
+      const s = obj.structured;
+      body.insertAdjacentHTML("beforeend",
+        `<div class="chips"><span class="chip">📦 ${esc(s.node)}${s.key ? " · " + esc(s.key) : ""}</span></div>${renderFields(s.data)}`);
+      return;
+    }
+    if (obj.custom !== undefined) {                   // 노드의 진행 신호(get_stream_writer) — 본문과 섞지 않고 한 줄로
+      const c = typeof obj.custom === "string" ? obj.custom : JSON.stringify(obj.custom);
+      box.querySelector(".prog")?.remove();
+      body.insertAdjacentHTML("beforeend", `<div class="who prog">⏳ ${esc(c)}</div>`);
+      return;
+    }
     const chunk = obj.chunk;
     if (!chunk || typeof chunk !== "object") return;
     // 각 노드 업데이트({node: state})를 순회 — interrupt면 승인 카드(재개도 스트리밍), 아니면 툴/텍스트 갱신.
@@ -387,27 +405,14 @@ async function streamRequest(agentId, url, payload) {
   if (!errored && !txt.textContent.trim()) txt.textContent = " (완료)";
 }
 
-// Resume — 중단된 스레드를 결정으로 재개. 텍스트 비면 승인, "반려/no…"면 반려(나머지는 사유).
-function parseDecision(text) {
-  const t = text.trim();
-  if (!t) return {approved: true, decided_by: $("#xuser").value || "trader"};
-  const rej = /^(반려|거절|no|reject|false)\b/i.exec(t);
-  return {approved: !rej, comment: (rej ? t.slice(rej[0].length).trim() : t) || null, decided_by: $("#xuser").value || "trader"};
-}
-async function resume() {
-  if (busy) return;
-  const agentId = $("#agent").value, text = $("#text").value.trim();
-  const decision = parseDecision(text);
-  bubble("user", "나", `↩︎ resume: ${decision.approved ? "승인" : "반려"}${decision.comment ? " — " + esc(decision.comment) : ""}`);
-  clearText();
-  const typing = bubble("bot", agentId, ""); typing.classList.add("typing");
-  setBusy(true);
-  try {
-    const r = await api(`/agents/${agentId}/resume`, {method:"POST", body: JSON.stringify({thread_id: thread(), decision})});
-    renderResponse(agentId, r);
-  } finally {
-    typing.remove(); setBusy(false);
-  }
+// 재접속 복원 — 이 thread 에 대기 중인 승인(interrupt)이 있으면 카드를 다시 띄운다.
+// 재개는 승인 카드의 승인/반려로만 한다(별도 Resume 버튼은 같은 /resume 을 id 없이 부르던 중복이라 제거).
+async function restorePending() {
+  const agentId = $("#agent").value; if (!agentId) return;
+  const r = await api(`/agents/${agentId}/threads/${encodeURIComponent(thread())}`);
+  if (r.status !== 200 || !Array.isArray(r.body.interrupts) || !r.body.interrupts.length) return;
+  bubble("bot", "system", "대기 중인 승인 요청을 복원했습니다");
+  r.body.interrupts.forEach(p => renderApproval(agentId, p, false));
 }
 // textarea 자동 높이. box-sizing:border-box 라 height에는 테두리도 포함되는데 scrollHeight에는
 // 없다 — 그대로 대입하면 테두리 두께만큼 모자라 한 글자만 써도 스크롤바가 생긴다.
@@ -432,16 +437,16 @@ async function boot() {
   }
   $("#agent").innerHTML = r.body.map(a => `<option value="${a.id}">${a.id} — ${a.name || ""}</option>`).join("");
   setHint();
+  await restorePending();   // 새로고침 전 대기 중이던 승인 카드 복원
 }
 $("#composer").addEventListener("submit", send);
 $("#stream").onclick = stream;
-$("#resume").onclick = resume;
 $("#stop").onclick = () => aborter?.abort();
-$("#agent").onchange = setHint;
-$("#newchat").onclick = () => { threadBase = "t-" + rnd(); log.innerHTML = ""; bubble("bot", "system", `새 대화 (${userId()})`); };
+$("#agent").onchange = () => { setHint(); log.innerHTML = ""; restorePending(); };
+$("#newchat").onclick = () => { threadBase = "t-" + rnd(); keep("klafi.thread", threadBase); log.innerHTML = ""; bubble("bot", "system", `새 대화 (${userId()})`); };
 // X-User 변경 = 다른 유저의 세션으로 전환. 화면을 비워 이전 유저 대화가 섞이지 않게 한다.
 // (서버는 각 유저 thread로 이력을 분리 보관하므로, 같은 유저로 돌아오면 이어진다.)
-$("#xuser").onchange = () => { log.innerHTML = ""; bubble("bot", "system", `유저 전환: ${userId()} (독립 세션)`); };
+$("#xuser").onchange = () => { log.innerHTML = ""; bubble("bot", "system", `유저 전환: ${userId()} (독립 세션)`); restorePending(); };
 $("#text").addEventListener("input", autosize);
 window.addEventListener("resize", autosize);   // 창 너비가 바뀌면 줄바꿈이 달라져 높이도 달라진다
 autosize();                                    // 초기 높이(붙여넣기 복원·기본값)도 맞춰둔다

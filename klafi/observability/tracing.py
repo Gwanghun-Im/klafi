@@ -185,7 +185,7 @@ def _corr(ctx: ExecutionContext | None) -> dict[str, Any]:
         "klafi.agent_version": ctx.agent_version,
         "klafi.project_id": ctx.project_id,
         "klafi.session_id": ctx.session_id,
-        "klafi.thread_id": ctx.session_id or ctx.execution_id,
+        "klafi.thread_id": ctx.thread_id or ctx.session_id or ctx.execution_id,
         "klafi.request_id": ctx.request_id,
         "klafi.user_id": ctx.user_id,
         "klafi.tenant_id": ctx.tenant_id,
@@ -253,7 +253,13 @@ class TracingHook(Hook):
     # Agent span (before_agent~finally_agent은 invoke 프레임 내 연속 호출 → 안전)
     def before_agent(self, input: Any, ctx: ExecutionContext | None) -> None:
         eid = ctx.execution_id if ctx else "-"
-        self._start(("agent", eid), f"agent.{ctx.agent_id if ctx else '?'}", _corr(ctx))
+        key = ("agent", eid)
+        self._start(key, f"agent.{ctx.agent_id if ctx else '?'}", _corr(ctx))
+        otel_tid = self._spans[key][0].get_span_context().trace_id
+        if ctx is not None and otel_tid:
+            # 실제 OTel trace id 로 통일 — 로그·span·응답이 서로 다른 'trace id' 를 보이지 않게 한다.
+            ctx.trace_id = format(otel_tid, "032x")
+            self._spans[key][0].set_attribute("klafi.trace_id", ctx.trace_id)
 
     def on_agent_error(self, input: Any, exc: BaseException, ctx: ExecutionContext | None) -> None:
         self._mark_error(("agent", ctx.execution_id if ctx else "-"), exc)

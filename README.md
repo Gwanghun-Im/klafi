@@ -279,6 +279,9 @@ def no_secrets(text): return "비밀번호" not in text
 
 # 2) 코드에서 직접 적용. 세 지점:
 #    · 노드           @klafi_node("n", before=[require_login, no_secrets], after=[mask_pii]) def node(state): ...
+#    · 전달 계약       @klafi_node("route", visibility="internal")   → 스트림에 토큰·updates 미전달(내부 판단 노드)
+#                     @klafi_node("extract", output=Report)          → 반환값을 스키마로 검증·강제, 스트림엔 structured 청크 1회,
+#                                                                  /agents/{id} 의 nodes 에 output_schema(JSON Schema) 노출
 #    · 워크플로우 전체  @klafi_graph(before=[require_login, no_secrets]) class MyAgent(KlafiGraph): ...
 #    · 공통 훅(플랫폼)  GuardrailHook(input=[no_secrets], output=[pii], model=[prompt_injection],
 #                                   model_output=[pii])  →  KlafiApp platform_hooks 로 주입

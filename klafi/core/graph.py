@@ -35,6 +35,7 @@ from .spec import AgentSpec
 
 class KlafiGraph(BaseGraph):
     state_schema: type | None = None  # 하위 클래스가 지정
+    context_schema: type | None = None  # LangGraph Runtime.context 타입 — invoke(..., runtime_context=...) 로 주입
     spec: AgentSpec | None = None  # 클래스 속성으로 지정하거나 생성자 인자로 전달
     observability: bool = True  # 기본 Logging/Tracing Hook 탑재 여부
 
@@ -46,6 +47,7 @@ class KlafiGraph(BaseGraph):
         checkpointer: Any = None,
         policy: Any = None,
         store: Any = None,
+        cache: Any = None,  # 노드 캐시 백엔드("memory" | BaseCache) — add_node(cache_policy=...) 에 필요
         hooks: list[Hook] | None = None,
     ) -> None:
         if self.state_schema is None:
@@ -54,7 +56,7 @@ class KlafiGraph(BaseGraph):
         if resolved_spec is None:
             raise AgentExecutionException("spec을 생성자 인자 또는 클래스 속성으로 지정하세요")
 
-        self._sg = StateGraph(self.state_schema)
+        self._sg = StateGraph(self.state_schema, context_schema=self.context_schema)
         self.model = model  # (prompt)->str — Template용. chat model은 init_chat_model(alias).
 
         base: list[Hook] = []
@@ -69,6 +71,7 @@ class KlafiGraph(BaseGraph):
             checkpointer=checkpointer,
             policy=policy,
             store=store,
+            cache=cache,
             hooks=[*base, *(hooks or [])],
         )
 
@@ -108,17 +111,22 @@ class KlafiGraph(BaseGraph):
     #   llm = init_chat_model("main").bind_tools([toolA])
     #   llm = bind_skills(init_chat_model("main"), [skillA])     # 툴 + 지침
     #   self.add_node("tools", self.make_tool_node([toolA]))
-    def make_tool_node(self, tools: list[Any]) -> Any:
+    def make_tool_node(self, tools: list[Any], **kwargs: Any) -> Any:
         """주어진 tools로 LangGraph ToolNode 생성 (노드별로 서로 다른 툴셋 가능).
 
         KLAFI Tool·Skill은 LangChain tool로 자동 변환된다. ToolNode가 실행해도
-        권한·검증·Timeout·Hook은 KLAFI Tool.run에서 그대로 적용된다.
+        권한·검증·Timeout·Hook은 KLAFI Tool.run에서 그대로 적용된다. kwargs 는 ToolNode 옵션
+        (handle_tool_errors 등) 그대로. 기본 handle_tool_errors 는 KLAFI 툴 예외(권한·검증·timeout·
+        실행 실패)를 ToolMessage(status=error) 로 모델에 돌려준다 — LangGraph 기본은
+        ToolInvocationError 만 처리해 그래프 실행이 통째로 중단됐다. 가드레일 차단은 그대로 전파(fail-close).
         """
         from langgraph.prebuilt import ToolNode
 
+        from klafi.core.exceptions import TimeoutException, ToolException
         from klafi.tool.tool import to_langchain_tools
 
-        return ToolNode(to_langchain_tools(tools))
+        kwargs.setdefault("handle_tool_errors", (ToolException, TimeoutException))
+        return ToolNode(to_langchain_tools(tools), **kwargs)
 
     # ── StateGraph 빌더 위임 (LangGraph API 그대로) ─────────────────────
     def add_node(self, *args: Any, **kwargs: Any) -> "KlafiGraph":
@@ -189,7 +197,9 @@ def klafi_graph(
         class MyAgent(KlafiGraph): ...
 
     노드 단위 적용은 @klafi_node 를 쓴다.
-    스트리밍에서는 after 파이프라인이 적용되지 않는다(BaseGraph.stream 의 TODO 참조).
+    스트리밍에서는 after 파이프라인이 스트림 종료 시 최종 상태에 **판정용**으로 돈다 — 차단은 예외로
+    전달되지만 치환은 이미 전송된 스트림에 반영되지 않는다(마스킹은 @klafi_node(after=...) 로: 그 노드의
+    토큰은 after 적용 후 본문으로만 나간다).
     """
 
     def deco(target: Any) -> Any:

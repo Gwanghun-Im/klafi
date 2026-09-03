@@ -74,10 +74,23 @@ class RuleEvaluator(Evaluator):
 
 
 def _parse_score(text: str) -> float:
-    m = re.search(r"\d+(?:\.\d+)?", str(text))
-    if not m:
-        return 0.0
-    return max(0.0, min(1.0, float(m.group())))
+    """심판 응답에서 점수 하나를 뽑는다. JSON {"score": x} > 분수 a/b > 마지막 숫자(점수는 보통 말미).
+    1<x<=10 이면 10점 척도로 보고 /10. 첫 숫자를 취하던 이전 구현은 '2 errors… score 0.1' 을 1.0 으로 읽었다."""
+    s = str(text)
+    m = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', s)
+    if m:
+        val = float(m.group(1))
+    else:
+        frac = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", s)
+        if frac and float(frac.group(2)) > 0:
+            return max(0.0, min(1.0, float(frac.group(1)) / float(frac.group(2))))
+        nums = re.findall(r"\d+(?:\.\d+)?", s)
+        if not nums:
+            return 0.0
+        val = float(nums[-1])
+    if 1.0 < val <= 10.0:
+        val /= 10.0
+    return max(0.0, min(1.0, val))
 
 
 class LLMJudgeEvaluator(Evaluator):

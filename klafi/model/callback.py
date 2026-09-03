@@ -20,11 +20,12 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
+from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from klafi.core.context import get_context
 from klafi.core.hook import _transform, active_hooks
-from klafi.observability.tracing import span as klafi_span
+from klafi.observability.tracing import _TRACER_NAME
 
 _log = logging.getLogger("klafi.guardrail")
 
@@ -41,13 +42,20 @@ def _judge(hooks: Any, method: str, value: Any, rebuild: Any, stage: str, *, rev
 
 
 def _messages_to_text(messages: Any) -> str:
-    """콜백이 주는 메시지 목록을 Guardrail·로깅용 평문으로."""
-    out: list[str] = []
+    """콜백이 주는 메시지 배치에서 **마지막 메시지**만 평문으로.
+
+    앞의 메시지는 그것이 마지막이었을 때 이미 검사됐다. 매 호출 이력 전체를 다시 스캔하면 턴마다
+    비용이 N배로 늘고 system 프롬프트가 매번 오탐 대상이 된다.
+    """
+    last: Any = None
     for batch in messages or []:
-        for m in batch if isinstance(batch, list) else [batch]:
-            content = getattr(m, "content", m)
-            out.append(content if isinstance(content, str) else str(content))
-    return "\n".join(out)
+        items = batch if isinstance(batch, list) else [batch]
+        if items:
+            last = items[-1]
+    if last is None:
+        return ""
+    content = getattr(last, "content", last)
+    return content if isinstance(content, str) else str(content)
 
 
 class KlafiCallbackHandler(BaseCallbackHandler):
@@ -71,10 +79,12 @@ class KlafiCallbackHandler(BaseCallbackHandler):
         # Guardrail(fail-close)이 여기서 raise하면 LLM 호출 자체가 중단된다.
         _judge(hooks, "before_model", prompt, lambda p: (self._alias, p, ctx), "model")
 
-        cm = klafi_span(f"model.{self._alias}")
-        sp = cm.__enter__()
+        # 리프 span 이라 current context 에 attach 하지 않는다 — async 경로에서 langchain 이 sync 콜백을
+        # 별도 copy_context 로 실행하므로 attach/detach 토큰이 다른 컨텍스트에서 풀려 오류가 났다.
+        # 부모는 start_span 이 현재 컨텍스트(노드 span)에서 자동으로 잡는다.
+        sp = trace.get_tracer(_TRACER_NAME).start_span(f"model.{self._alias}")
         sp.set_attribute("klafi.model", self._alias)
-        self._runs[run_id] = {"cm": cm, "span": sp, "prompt": prompt, "hooks": hooks, "ctx": ctx}
+        self._runs[run_id] = {"span": sp, "prompt": prompt, "hooks": hooks, "ctx": ctx}
 
     # ── 호출 종료 ──────────────────────────────────────────────────────
     def on_llm_end(self, response: Any, *, run_id: UUID, **kw: Any) -> None:
@@ -98,8 +108,12 @@ class KlafiCallbackHandler(BaseCallbackHandler):
             from klafi.events import EventType, emit
 
             emit(EventType.ModelCalled, model=self._alias, tokens=(usage or {}).get("total_tokens", 0))
+        except BaseException as exc:
+            sp.record_exception(exc)
+            sp.set_status(Status(StatusCode.ERROR))
+            raise
         finally:
-            run["cm"].__exit__(None, None, None)
+            sp.end()
 
     def on_llm_error(self, error: BaseException, *, run_id: UUID, **kw: Any) -> None:
         run = self._runs.pop(run_id, None)
@@ -107,7 +121,7 @@ class KlafiCallbackHandler(BaseCallbackHandler):
             return
         run["span"].record_exception(error)
         run["span"].set_status(Status(StatusCode.ERROR))
-        run["cm"].__exit__(type(error), error, error.__traceback__)
+        run["span"].end()
 
     @staticmethod
     def _extract(response: Any) -> tuple[str, dict[str, Any] | None]:

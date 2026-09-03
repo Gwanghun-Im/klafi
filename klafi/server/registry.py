@@ -34,7 +34,12 @@ class AgentServer:
         return list(self._agents)
 
     def metadata(self, agent_id: str) -> dict[str, Any]:
-        return self.get(agent_id).spec.model_dump()
+        agent = self.get(agent_id)
+        meta = agent.spec.model_dump()
+        contracts = getattr(agent, "node_contracts", None)
+        if contracts is not None:  # 노드별 전달 계약(visibility·구조화 출력 스키마) — 클라이언트가 출력 모양을 안다
+            meta["nodes"] = contracts()
+        return meta
 
     def list_metadata(self) -> list[dict[str, Any]]:
         return [a.spec.model_dump() for a in self._agents.values()]

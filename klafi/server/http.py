@@ -9,6 +9,8 @@ Endpoints:
   GET  /agents/{id}                Metadata (API-08)
   POST /agents/{id}/invoke         (API-01)
   POST /agents/{id}/stream         (API-02, NDJSON)
+  POST /agents/{id}/resume, /resume/stream   HITL 재개(decision 필수, id-키 가능; 대기 없으면 409)
+  GET  /agents/{id}/threads/{thread_id}   스레드 상태(대기 중 interrupt·next) — 재접속 카드 복원
   GET  /openapi.json, /docs        OpenAPI 자동생성 (API-09, FastAPI 기본 제공)
 """
 
@@ -20,7 +22,7 @@ from typing import Any, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from klafi.core.context import ExecutionContext
 from .concurrency import install_concurrency_limit
@@ -35,6 +37,9 @@ _log = logging.getLogger("klafi.server")
 class InvokeRequest(BaseModel):
     input: Any = None  # None이면 Resume(Checkpoint 이후 재개)
     thread_id: str | None = None
+    # /stream 전용: LangGraph stream_mode. 기본 ["updates","messages"]. "custom" 을 넣으면 노드의
+    # get_stream_writer() 출력이 {"custom": ...} 라인으로 온다. "values" 는 {"chunk": state}.
+    stream_mode: str | list[str] | None = None
 
     model_config = {
         "json_schema_extra": {
@@ -62,7 +67,10 @@ class InvokeRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     thread_id: str
-    decision: Any = None  # HITL 승인 결정 {approved, comment, ...} 또는 임의 resume 값
+    # HITL 승인 결정 {approved, comment, ...} 또는 임의 resume 값. 필수 — 생략하면 LangGraph 가 resume=None 으로
+    # 500 을 냈다. 병렬 브랜치로 interrupt 가 여럿이면 {"<interrupt_id>": 결정, ...} 형태(id 는 응답의 __interrupt__[i].id).
+    decision: Any = Field(...)
+    stream_mode: str | list[str] | None = None  # /resume/stream 전용 (InvokeRequest 와 동일)
 
     model_config = {
         "json_schema_extra": {
@@ -105,7 +113,10 @@ def _encode(obj: Any) -> Any:
     # HITL interrupt는 value(action/payload/approver...)를 구조 그대로 노출 → 프론트가 양식을 범용 렌더.
     def _default(o: Any) -> Any:
         if type(o).__name__ == "Interrupt":
-            return {"value": getattr(o, "value", None)}
+            # id 를 함께 내려야 pending interrupt 가 여럿일 때 id-키 resume({"<id>": 결정}) 이 가능하다
+            return {"id": getattr(o, "id", None), "value": getattr(o, "value", None)}
+        if hasattr(o, "model_dump") and not hasattr(o, "content"):  # pydantic 구조화 출력(메시지는 str 표기 유지)
+            return o.model_dump()
         return str(o)
 
     return json.loads(json.dumps(obj, default=_default, ensure_ascii=False))
@@ -153,7 +164,7 @@ def _msg_text(msg: Any) -> str:
 def _stream_line(ctx: ExecutionContext, item: Any) -> "str | None":
     """stream_mode=["updates","messages"] 항목 → NDJSON 한 줄.
     messages=LLM 토큰(token), updates=노드 결과(chunk, interrupt 감지·최종 상태용)."""
-    if isinstance(item, tuple) and len(item) == 2 and item[0] in ("updates", "messages"):
+    if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):  # (mode, payload) — custom/values 포함
         mode, payload = item
     else:  # 단일 모드 방어
         mode, payload = "updates", item
@@ -165,7 +176,51 @@ def _stream_line(ctx: ExecutionContext, item: Any) -> "str | None":
         if not text:  # tool_call만 있는 청크 등
             return None
         return json.dumps({"execution_id": ctx.execution_id, "token": text}, ensure_ascii=False) + "\n"
+    if mode == "custom":  # 노드의 get_stream_writer() 출력(진행률 등)
+        return json.dumps({"execution_id": ctx.execution_id, "custom": _encode(payload)}, ensure_ascii=False) + "\n"
+    if mode == "structured":  # output 계약 노드의 완료 결과 {node, key, data}
+        return json.dumps({"execution_id": ctx.execution_id, "structured": _encode(payload)}, ensure_ascii=False) + "\n"
     return json.dumps({"execution_id": ctx.execution_id, "chunk": _encode(payload)}, ensure_ascii=False) + "\n"
+
+
+_DEFAULT_STREAM_MODES = ["updates", "messages"]
+
+
+def _stream_modes(requested: Any) -> list[str]:
+    """클라이언트 stream_mode → 항상 리스트(항목이 (mode, payload) 튜플이 되게)."""
+    if not requested:
+        return list(_DEFAULT_STREAM_MODES)
+    return [requested] if isinstance(requested, str) else list(requested)
+
+
+def _thread_snapshot(agent: Any, thread_id: str) -> tuple[Any, list[Any]]:
+    """(StateSnapshot | None, 대기 중 interrupt 목록). 없는 thread·checkpointer 없음 → (None, [])."""
+    try:
+        snap = agent.get_state(thread_id=thread_id)
+    except Exception:  # noqa: BLE001
+        return None, []
+    interrupts = list(getattr(snap, "interrupts", None) or ())
+    if not interrupts:
+        interrupts = [i for t in (getattr(snap, "tasks", ()) or ()) for i in (getattr(t, "interrupts", None) or ())]
+    return snap, interrupts
+
+
+def _pending_interrupts(agent: Any, thread_id: str) -> bool:
+    return bool(_thread_snapshot(agent, thread_id)[1])
+
+
+def _no_pending_response(ctx: ExecutionContext, thread_id: str) -> JSONResponse:
+    # 대기 중인 승인이 없는 thread 를 resume 하면 LangGraph 는 (없는 thread 면) 처음부터 새로 실행한다 —
+    # 오타 thread_id 로 결제 노드가 다시 도는 사고를 409 로 막는다.
+    return JSONResponse(
+        status_code=409,
+        content={
+            "execution_id": ctx.execution_id,
+            "state": "NO_PENDING_INTERRUPT",
+            "error_code": "NO_PENDING_INTERRUPT",
+            "error": f"thread '{thread_id}' 에 대기 중인 interrupt(승인 요청)가 없습니다",
+        },
+    )
 
 
 def create_app(
@@ -201,6 +256,24 @@ def create_app(
     def agent_meta(agent_id: str) -> dict[str, Any]:  # API-08
         return server.metadata(agent_id)
 
+    @app.get("/agents/{agent_id}/threads/{thread_id}")
+    def thread_state(agent_id: str, thread_id: str) -> dict[str, Any]:
+        """스레드 상태 — 대기 중 interrupt(승인 요청, id 포함)·다음 노드.
+
+        재접속한 클라이언트가 승인 카드를 복원하는 용도(새로고침해도 승인 가능). state:
+        WAITING_APPROVAL(대기 중 interrupt 있음) / RUNNING(다음 노드 있음) / COMPLETED / EMPTY(기록 없음).
+        """
+        agent = server.get(agent_id)
+        snap, interrupts = _thread_snapshot(agent, thread_id)
+        nxt = list(getattr(snap, "next", ()) or ()) if snap else []
+        if interrupts:
+            state = "WAITING_APPROVAL"
+        elif not (snap and getattr(snap, "values", None)):
+            state = "EMPTY"
+        else:
+            state = "RUNNING" if nxt else "COMPLETED"
+        return {"thread_id": thread_id, "state": state, "next": nxt, "interrupts": _encode(interrupts)}
+
     # async 엔드포인트 + agent.ainvoke — sync 로 두면 요청마다 threadpool(기본 40캡, 숨은 동시성
     # 상한) + _timeout_sync 스레드가 이중으로 들고, 타임아웃도 명목(스레드는 못 죽여 작업이 백그라
     # 운드에서 계속)이 된다. async 경로는 asyncio.wait_for 라 타임아웃이 진짜 협조적 취소다.
@@ -220,28 +293,31 @@ def create_app(
 
         agent = server.get(agent_id)
         ctx = _context(request, agent.spec, body.thread_id, auth)
+        if not _pending_interrupts(agent, body.thread_id):
+            return _no_pending_response(ctx, body.thread_id)
         try:
             result = await agent.ainvoke(Command(resume=body.decision), context=ctx, thread_id=body.thread_id)
         except Exception as exc:  # noqa: BLE001 — invoke와 동일하게 원인별 status
             return _fail_response(ctx, exc)
         return JSONResponse(content=_result_body(ctx, result))
 
-    def _make_stream(agent_id: str, request: Request, thread_id: str | None, stream_input: Any) -> Any:
+    def _make_stream(
+        agent_id: str, request: Request, thread_id: str | None, stream_input: Any, stream_mode: Any = None
+    ) -> Any:
         """스트리밍 응답 조립 — /stream(입력)과 /resume/stream(Command resume)이 공유.
 
         동시성 슬롯은 install_concurrency_limit 미들웨어가 StreamingResponse 전송 완료까지 잡는다.
         """
         agent = server.get(agent_id)
         ctx = _context(request, agent.spec, thread_id, auth)
+        modes = _stream_modes(stream_mode)
 
         # async 제너레이터: 이벤트 루프에서 직접 iteration → ContextVar 안정
         # (sync 제너레이터는 starlette가 iteration마다 context를 복사해 token reset이 깨진다)
         async def gen() -> Any:
-            # updates=노드/interrupt, messages=LLM 토큰 → 진짜 토큰 단위 스트리밍
+            # updates=노드/interrupt, messages=LLM 토큰(after 가드레일 적용 후 본문) → 진짜 토큰 단위 스트리밍
             try:
-                async for item in agent.astream(
-                    stream_input, context=ctx, thread_id=thread_id, stream_mode=["updates", "messages"]
-                ):
+                async for item in agent.astream(stream_input, context=ctx, thread_id=thread_id, stream_mode=modes):
                     line = _stream_line(ctx, item)
                     if line:
                         yield line
@@ -253,12 +329,15 @@ def create_app(
 
     @app.post("/agents/{agent_id}/stream")
     async def stream(agent_id: str, body: InvokeRequest, request: Request) -> Any:  # API-02
-        return _make_stream(agent_id, request, body.thread_id, body.input)
+        return _make_stream(agent_id, request, body.thread_id, body.input, body.stream_mode)
 
     @app.post("/agents/{agent_id}/resume/stream")
     async def resume_stream(agent_id: str, body: ResumeRequest, request: Request) -> Any:  # HITL 재개도 스트리밍
         from langgraph.types import Command
 
-        return _make_stream(agent_id, request, body.thread_id, Command(resume=body.decision))
+        agent = server.get(agent_id)
+        if not _pending_interrupts(agent, body.thread_id):
+            return _no_pending_response(_context(request, agent.spec, body.thread_id, auth), body.thread_id)
+        return _make_stream(agent_id, request, body.thread_id, Command(resume=body.decision), body.stream_mode)
 
     return app

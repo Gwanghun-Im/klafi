@@ -32,14 +32,15 @@ def _agent(build_node, policy=None, config=None):
 
 # ── ExecutionPolicy 단위 ────────────────────────────────────────────────
 def test_backoff_is_exponential_and_capped():
-    p = ExecutionPolicy(backoff_base=1.0, backoff_factor=2.0, backoff_max=5.0)
+    p = ExecutionPolicy(backoff_base=1.0, backoff_factor=2.0, backoff_max=5.0, jitter=False)
     assert [p.backoff_delay(i) for i in range(4)] == [1.0, 2.0, 4.0, 5.0]  # 8→cap 5
 
 
 def test_should_retry_respects_max_and_deterministic():
     p = ExecutionPolicy(max_retries=2)
-    assert p.should_retry(ValueError(), 0) is True
-    assert p.should_retry(ValueError(), 2) is False  # attempt >= max
+    assert p.should_retry(ConnectionError(), 0) is True  # 일시 장애
+    assert p.should_retry(ValueError(), 0) is False  # 결정적 오류는 기본 제외(LangGraph default_retry_on 과 동일)
+    assert p.should_retry(ConnectionError(), 2) is False  # attempt >= max
     assert p.should_retry(GuardrailException("x"), 0) is False  # no_retry_on
 
 
@@ -87,7 +88,7 @@ def test_retry_then_success():
     def flaky(s):
         calls.append(1)
         if len(calls) < 3:
-            raise ValueError("transient")
+            raise ConnectionError("transient")
         return {"text": "ok"}
 
     ctx = ExecutionContext.new()
@@ -104,10 +105,10 @@ def test_retry_exhausted_fails():
 
     def always(s):
         calls.append(1)
-        raise ValueError("nope")
+        raise ConnectionError("nope")
 
     ctx = ExecutionContext.new()
-    with pytest.raises(ValueError):
+    with pytest.raises(ConnectionError):
         _agent(always, policy=ExecutionPolicy(max_retries=2, backoff_base=0.0)).invoke(
             {"text": "x"}, context=ctx
         )
@@ -212,7 +213,7 @@ def test_retry_without_checkpointer_replays_input():
 
             def node(s):
                 calls.append(s["x"])
-                raise ValueError("실패")
+                raise ConnectionError("실패")
 
             g.add_node("n", node)
             g.add_edge(START, "n")
@@ -220,6 +221,6 @@ def test_retry_without_checkpointer_replays_input():
             return g
 
     agent = Flow(AgentSpec(id="f2", name="F2"), policy=ExecutionPolicy(max_retries=1, backoff_base=0.0))
-    with pytest.raises(ValueError):
+    with pytest.raises(ConnectionError):
         agent.invoke({"x": "입력"})
     assert calls == ["입력", "입력"]  # 매번 원본 input으로 재실행

@@ -12,17 +12,25 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from pydantic import SecretStr
+
 from klafi.core.exceptions import ModelException, ModelNotConfiguredError
 
 from .gateway import FunctionProvider, ModelResult
 
 
+def _secret(value: str | None, env: str) -> SecretStr | None:
+    """API 키는 SecretStr 로만 보관 — vars()/repr/로그/피클에 평문이 새지 않게 (SEC-05)."""
+    raw = value or os.environ.get(env)
+    return SecretStr(raw) if raw else None
+
+
 class OpenAIProvider:
-    """OpenAI Chat Completions 어댑터."""
+    """OpenAI Chat Completions 어댑터. kwargs(temperature 등)는 두 경로(SDK·LangChain) 모두에 전달."""
 
     def __init__(self, model: str = "gpt-4o-mini", *, api_key: str | None = None, **kwargs: Any) -> None:
         self._model = model
-        self._key = api_key or os.environ.get("OPENAI_API_KEY")
+        self._key = _secret(api_key, "OPENAI_API_KEY")
         self._kwargs = kwargs
         self._client = None
 
@@ -34,7 +42,7 @@ class OpenAIProvider:
                 from openai import OpenAI
             except ImportError as exc:
                 raise ModelException("openai 패키지가 필요합니다: pip install openai") from exc
-            self._client = OpenAI(api_key=self._key)
+            self._client = OpenAI(api_key=self._key.get_secret_value())
         return self._client
 
     def __call__(self, prompt: str) -> ModelResult:
@@ -47,18 +55,19 @@ class OpenAIProvider:
         u = resp.usage
         return ModelResult(text, getattr(u, "prompt_tokens", 0), getattr(u, "completion_tokens", 0))
 
-    def chat_model(self, callbacks: Any = None) -> Any:
+    def chat_model(self, callbacks: Any = None, **overrides: Any) -> Any:
         """bind_tools 가능한 LangChain chat model (tool-calling·structured output용).
 
         callbacks는 Gateway가 주입하는 KLAFI 계측 핸들러 — 파생 Runnable에도 상속된다.
+        overrides 는 alias policy(timeout/max_retries)처럼 Gateway 가 얹는 생성 인자.
         """
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=self._model, api_key=self._key, callbacks=callbacks)
+        return ChatOpenAI(model=self._model, api_key=self._key, callbacks=callbacks, **{**self._kwargs, **overrides})
 
 
 class AnthropicProvider:
-    """Anthropic Messages 어댑터."""
+    """Anthropic Messages 어댑터. kwargs(temperature 등)는 두 경로(SDK·LangChain) 모두에 전달."""
 
     def __init__(
         self,
@@ -69,7 +78,7 @@ class AnthropicProvider:
         **kwargs: Any,
     ) -> None:
         self._model = model
-        self._key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self._key = _secret(api_key, "ANTHROPIC_API_KEY")
         self._max_tokens = max_tokens
         self._kwargs = kwargs
         self._client = None
@@ -82,7 +91,7 @@ class AnthropicProvider:
                 from anthropic import Anthropic
             except ImportError as exc:
                 raise ModelException("anthropic 패키지가 필요합니다: pip install anthropic") from exc
-            self._client = Anthropic(api_key=self._key)
+            self._client = Anthropic(api_key=self._key.get_secret_value())
         return self._client
 
     def __call__(self, prompt: str) -> ModelResult:
@@ -96,15 +105,17 @@ class AnthropicProvider:
         u = resp.usage
         return ModelResult(text, getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
 
-    def chat_model(self, callbacks: Any = None) -> Any:
+    def chat_model(self, callbacks: Any = None, **overrides: Any) -> Any:
         """bind_tools 가능한 LangChain chat model (tool-calling·structured output용).
 
         callbacks는 Gateway가 주입하는 KLAFI 계측 핸들러 — 파생 Runnable에도 상속된다.
+        overrides 는 alias policy(timeout/max_retries)처럼 Gateway 가 얹는 생성 인자.
         """
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-            model=self._model, api_key=self._key, max_tokens=self._max_tokens, callbacks=callbacks
+            model=self._model, api_key=self._key, max_tokens=self._max_tokens, callbacks=callbacks,
+            **{**self._kwargs, **overrides},
         )
 
 
@@ -134,11 +145,12 @@ def resolve_provider(spec: dict[str, Any]) -> Any:
 
 
 def _openai_factory(spec: dict[str, Any]) -> Any:
-    return OpenAIProvider(spec.get("model") or "gpt-4o-mini")
+    # params: model.yaml 의 모델 생성 인자(temperature, max_tokens ...) — 두 경로 모두에 전달된다
+    return OpenAIProvider(spec.get("model") or "gpt-4o-mini", **(spec.get("params") or {}))
 
 
 def _anthropic_factory(spec: dict[str, Any]) -> Any:
-    return AnthropicProvider(spec.get("model") or "claude-haiku-4-5-20251001")
+    return AnthropicProvider(spec.get("model") or "claude-haiku-4-5-20251001", **(spec.get("params") or {}))
 
 
 def _echo_factory(spec: dict[str, Any]) -> Any:  # 키 없이 테스트/데모용

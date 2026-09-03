@@ -115,7 +115,27 @@ def _postgres_factory(cfg: dict[str, Any]) -> BaseStore:
     store = PostgresStore(_build_pool(cfg, "store"))
     if cfg.get("setup", True):
         store.setup()
-    return store
+    return SyncStoreAsyncAdapter(store)  # 동기 PostgresStore 의 abatch 는 미구현 — 서버는 async 경로만 쓴다
+
+
+class SyncStoreAsyncAdapter(BaseStore):
+    """동기 전용 store 에 abatch 를 입힌다(스레드). BaseStore 의 get/put/search/a* 편의 메서드는 batch/abatch 위에 있다."""
+
+    def __init__(self, inner: BaseStore) -> None:
+        self.inner = inner
+
+    def batch(self, ops: Any) -> Any:
+        return self.inner.batch(ops)
+
+    async def abatch(self, ops: Any) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self.inner.batch, ops)
+
+    def __getattr__(self, name: str) -> Any:  # supports_ttl·ttl_config·setup 등은 원본으로
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self.inner, name)
 
 
 for _n in ("memory", "inmemory"):
