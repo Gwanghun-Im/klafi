@@ -36,6 +36,7 @@ class EventType(str, Enum):  # §24 대표 Event
     ModelCalled = "ModelCalled"
     ApprovalRequested = "ApprovalRequested"
     ApprovalCompleted = "ApprovalCompleted"
+    GuardrailViolation = "GuardrailViolation"  # stage·guard·severity·reason — 감사·트레이스 뷰어용
 
 
 def _now() -> str:

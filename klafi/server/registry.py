@@ -18,6 +18,9 @@ AgentNotFound = AgentNotFoundError  # 하위호환 별칭
 class AgentServer:
     def __init__(self) -> None:
         self._agents: dict[str, BaseGraph] = {}
+        from .recorder import install
+
+        self.recorder = install()  # 실행 타임라인 기록(트레이스 뷰어) — 프로세스 전역 싱글턴
 
     def register(self, agent: BaseGraph, agent_id: str | None = None) -> str:
         aid = agent_id or agent.spec.id

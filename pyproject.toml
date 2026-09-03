@@ -26,6 +26,7 @@ dev = [  # uv sync 기본 포함 — venv 재동기화 시 테스트 의존성�
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "langgraph-checkpoint-postgres>=2",  # postgres 체크포인터/스토어 경로 테스트
+    "uvicorn[standard]>=0.30",  # examples/support_platform 을 저장소 venv 로 바로 띄우기 위함(실행기는 앱이 고르는 설계라 코어엔 없음)
 ]
 
 [build-system]

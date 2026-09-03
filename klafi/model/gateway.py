@@ -188,14 +188,15 @@ class ModelGateway:
             sp.set_attribute("klafi.prompt_tokens", result.prompt_tokens)
             sp.set_attribute("klafi.completion_tokens", result.completion_tokens)
             sp.set_attribute("klafi.tokens", result.total_tokens)  # OBS-08
+            usd: float | None = None
             if entry.cost:
-                usd = (result.prompt_tokens / 1000) * entry.cost[0] + (result.completion_tokens / 1000) * entry.cost[1]
-                sp.set_attribute("klafi.cost_usd", round(usd, 6))  # OBS-11
+                usd = round((result.prompt_tokens / 1000) * entry.cost[0] + (result.completion_tokens / 1000) * entry.cost[1], 6)
+                sp.set_attribute("klafi.cost_usd", usd)  # OBS-11
             # 응답 경계 가드레일 — 반환값이 응답을 교체한다(어니언: 역순).
             text = _transform(hooks, "after_model", result.text, lambda t: (alias, prompt, t, ctx), reverse=True)
             from klafi.events import EventType, emit  # lazy
 
-            emit(EventType.ModelCalled, model=alias, tokens=result.total_tokens)
+            emit(EventType.ModelCalled, model=alias, tokens=result.total_tokens, cost_usd=usd)
             return text
 
     @staticmethod

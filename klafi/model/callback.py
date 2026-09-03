@@ -93,6 +93,7 @@ class KlafiCallbackHandler(BaseCallbackHandler):
             return
         text, usage = self._extract(response)
         sp = run["span"]
+        usd: float | None = None
         if usage:
             prompt_tokens = usage.get("input_tokens", 0)
             completion_tokens = usage.get("output_tokens", 0)
@@ -100,14 +101,14 @@ class KlafiCallbackHandler(BaseCallbackHandler):
             sp.set_attribute("klafi.completion_tokens", completion_tokens)
             sp.set_attribute("klafi.tokens", usage.get("total_tokens", prompt_tokens + completion_tokens))
             if self._cost:
-                usd = (prompt_tokens / 1000) * self._cost[0] + (completion_tokens / 1000) * self._cost[1]
-                sp.set_attribute("klafi.cost_usd", round(usd, 6))
+                usd = round((prompt_tokens / 1000) * self._cost[0] + (completion_tokens / 1000) * self._cost[1], 6)
+                sp.set_attribute("klafi.cost_usd", usd)
         try:
             _judge(run["hooks"], "after_model", text, lambda t: (self._alias, run["prompt"], t, run["ctx"]),
                    "model_output", reverse=True)
             from klafi.events import EventType, emit
 
-            emit(EventType.ModelCalled, model=self._alias, tokens=(usage or {}).get("total_tokens", 0))
+            emit(EventType.ModelCalled, model=self._alias, tokens=(usage or {}).get("total_tokens", 0), cost_usd=usd)
         except BaseException as exc:
             sp.record_exception(exc)
             sp.set_status(Status(StatusCode.ERROR))

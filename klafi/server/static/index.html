@@ -93,6 +93,14 @@
     { background:var(--panel-hi); color:var(--fg); filter:none; }
   #composer button#stop { background:var(--bad-ctr); color:var(--on-bad-ctr); }
   button:disabled { opacity:.45; cursor:not-allowed; }  /* composer·HITL(.ok/.no) 공통 — 눌린 뒤 비활성 표시 */
+  /* 트레이스 타임라인 — "이 답이 어떻게 나왔나": 노드·모델·툴·가드레일·승인 */
+  .trace .tl { margin-top:6px; display:grid; gap:2px; font-size:12px; font-variant-numeric:tabular-nums; }
+  .trace .tr { display:grid; grid-template-columns:52px 18px minmax(80px,1fr) auto 60px; gap:8px; align-items:baseline;
+               padding:3px 8px; border-radius:8px; background:var(--bg); }
+  .trace .tr.head { grid-template-columns:1fr; color:var(--muted); background:transparent; padding:2px 8px; }
+  .trace .tr.bad { color:var(--bad); }
+  .trace .t, .trace .du { color:var(--muted); text-align:right; } .trace .ex { color:var(--muted); }
+  .trace .tr.guardrail .nm::before { content:""; }
   .typing .bubble::after { content:"▋"; animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
 </style>
@@ -234,6 +242,7 @@ function renderResponse(agentId, r) {
     `<div class="chips">${tools.map(t => `<span class="chip">🔧 ${esc(t)}</span>`).join("")}</div>`);
   box.insertAdjacentHTML("beforeend",
     `<details><summary>raw</summary><pre>${esc(JSON.stringify(r.body, null, 2))}</pre></details>`);
+  traceBox(box, agentId, r.body && r.body.execution_id);
 }
 
 // streaming=true 면 재개도 스트리밍(/resume/stream), false 면 invoke(/resume) — 시작 방식과 일치시킨다.
@@ -270,6 +279,40 @@ function renderApproval(agentId, pend, streaming) {
   };
   b.querySelector(".ok").onclick = () => decide(true);
   b.querySelector(".no").onclick = () => decide(false);
+}
+
+// ── 트레이스 뷰어 — 말풍선마다 "어떻게 나왔나"(열 때 GET /executions/{id} 1회) ───────────
+const fmtMs = ms => ms == null ? "" : (ms >= 1000 ? (ms/1000).toFixed(1) + "s" : Math.round(ms) + "ms");
+const ICON = {node:"▣", model:"🧠", tool:"🔧", guardrail:"🛡", approval:"🔔"};
+function renderTrace(el, t) {
+  const tt = t.totals || {};
+  const head = [t.state, fmtMs(t.duration_ms), `${tt.tokens || 0} tok`, tt.cost_usd ? `$${tt.cost_usd}` : "",
+                tt.violations ? `가드레일 ${tt.violations}` : ""].filter(Boolean).join(" · ");
+  const rows = (t.events || []).map(e => {
+    let ex = "";
+    if (e.kind === "model") ex = [e.tokens ? `${e.tokens} tok` : "", e.cost_usd ? `$${e.cost_usd}` : ""].filter(Boolean).join(" · ");
+    else if (e.kind === "guardrail") ex = [e.stage, e.severity, e.reason].filter(Boolean).join(" · ");
+    else if (e.kind === "approval") ex = e.status + (e.approver ? " · " + e.approver : "");
+    else if (e.error) ex = e.error;
+    const bad = e.status === "error" || e.severity === "block" || e.status === "rejected";
+    return `<div class="tr ${e.kind}${bad ? " bad" : ""}"><span class="t">${(e.t_ms/1000).toFixed(2)}s</span>` +
+      `<span class="ic">${ICON[e.kind] || "•"}</span><span class="nm">${esc(e.name)}</span>` +
+      `<span class="ex">${esc(ex)}</span><span class="du">${fmtMs(e.duration_ms)}</span></div>`;
+  }).join("");
+  el.innerHTML = `<div class="tr head"><span>${esc(head)}${t.error ? " · ⚠ " + esc(t.error) : ""}</span></div>${rows || '<div class="tr head"><span>기록 없음</span></div>'}`;
+}
+function traceBox(box, agentId, eid) {
+  if (!eid || !box || box.querySelector(".trace")) return;
+  const d = document.createElement("details"); d.className = "trace";
+  d.innerHTML = `<summary>trace</summary><div class="tl"></div>`;
+  box.appendChild(d);
+  d.addEventListener("toggle", async () => {
+    if (!d.open || d.dataset.loaded) return;
+    d.dataset.loaded = "1";
+    const r = await api(`/agents/${agentId}/executions/${encodeURIComponent(eid)}`);
+    if (r.status !== 200) { d.querySelector(".tl").innerHTML = `<div class="tr head"><span>${esc(errorText(r))}</span></div>`; return; }
+    renderTrace(d.querySelector(".tl"), r.body);
+  });
 }
 
 // ── 입력 → invoke ─────────────────────────────────────────────────────────
@@ -328,7 +371,7 @@ async function streamRequest(agentId, url, payload) {
   raw.innerHTML = `<summary>raw</summary><pre></pre>`; box.appendChild(raw);
   const rawPre = raw.querySelector("pre");
   const tools = new Set();
-  let errored = false, gotToken = false;
+  let errored = false, gotToken = false, eid = null;
   const showTools = () => {
     box.querySelector(".chips")?.remove();
     if (tools.size) body.insertAdjacentHTML("beforeend",
@@ -358,6 +401,7 @@ async function streamRequest(agentId, url, payload) {
     m.classList.remove("typing");   // 첫 데이터 도착 → thinking 해제
     rawPre.textContent += line + "\n";
     let obj; try { obj = JSON.parse(line); } catch { return; }
+    if (obj.execution_id) eid = obj.execution_id;
     if (obj.error) {                                  // 서버 에러 청크(가드레일/권한/오류)
       fail(obj.error.error || obj.error.state || "오류");   // error 문자열에 stage/guard가 이미 포함됨
       return;
@@ -403,6 +447,7 @@ async function streamRequest(agentId, url, payload) {
     m.classList.remove("typing"); aborter = null; setBusy(false);
   }
   if (!errored && !txt.textContent.trim()) txt.textContent = " (완료)";
+  traceBox(box, agentId, eid);
 }
 
 // 재접속 복원 — 이 thread 에 대기 중인 승인(interrupt)이 있으면 카드를 다시 띄운다.

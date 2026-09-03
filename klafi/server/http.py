@@ -11,6 +11,7 @@ Endpoints:
   POST /agents/{id}/stream         (API-02, NDJSON)
   POST /agents/{id}/resume, /resume/stream   HITL 재개(decision 필수, id-키 가능; 대기 없으면 409)
   GET  /agents/{id}/threads/{thread_id}   스레드 상태(대기 중 interrupt·next) — 재접속 카드 복원
+  GET  /agents/{id}/executions/{execution_id}  실행 타임라인(노드·모델·툴·가드레일·승인) — 트레이스 뷰어
   GET  /openapi.json, /docs        OpenAPI 자동생성 (API-09, FastAPI 기본 제공)
 """
 
@@ -273,6 +274,16 @@ def create_app(
         else:
             state = "RUNNING" if nxt else "COMPLETED"
         return {"thread_id": thread_id, "state": state, "next": nxt, "interrupts": _encode(interrupts)}
+
+    @app.get("/agents/{agent_id}/executions/{execution_id}")
+    def execution_trace(agent_id: str, execution_id: str) -> Any:
+        """실행 타임라인 — 노드·모델(토큰·비용)·툴 소요시간, 가드레일 판정, 승인 이력. Playground 트레이스 뷰어용."""
+        server.get(agent_id)  # 미등록 agent 는 404
+        run = server.recorder.get(execution_id)
+        if run is None or (run.get("agent_id") not in (None, agent_id)):
+            return JSONResponse(status_code=404, content={"error_code": "EXECUTION_NOT_FOUND",
+                                                          "error": f"execution '{execution_id}' 기록이 없습니다"})
+        return run
 
     # async 엔드포인트 + agent.ainvoke — sync 로 두면 요청마다 threadpool(기본 40캡, 숨은 동시성
     # 상한) + _timeout_sync 스레드가 이중으로 들고, 타임아웃도 명목(스레드는 못 죽여 작업이 백그라

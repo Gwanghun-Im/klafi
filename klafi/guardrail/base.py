@@ -151,6 +151,9 @@ def _check_leaf(g: Guardrail, leaf: Any, stage: str, ctx: ExecutionContext | Non
         "guardrail.violation stage=%s guard=%s severity=%s execution_id=%s reason=%s",
         stage, g.name, r.effective_severity, ctx.execution_id if ctx else "-", r.reason,
     )
+    from klafi.events import EventType, emit  # lazy: guardrail → events 단방향
+
+    emit(EventType.GuardrailViolation, stage=stage, guard=g.name, severity=r.effective_severity, reason=r.reason)
     if r.blocking:
         raise GuardrailViolationError(r.reason or "guardrail 위반", stage=stage, guard=g.name)
     return r.replacement if r.masks else leaf
